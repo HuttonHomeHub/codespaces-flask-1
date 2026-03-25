@@ -1,45 +1,316 @@
+:root {
+    color-scheme: light;
+    --panel-width: 320px;
+    --border-color: rgba(15, 23, 42, 0.12);
+    --shell-background: linear-gradient(135deg, #eef4f8 0%, #dbe6ee 100%);
+    --panel-background: linear-gradient(180deg, #f8fbfd 0%, #eef3f6 100%);
+    --map-background: #d7e0e8;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
 body {
+    height: 100%;
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen",
-        "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
-        sans-serif;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
 }
 
-code {
-    font-family: source-code-pro, Menlo, Monaco, Consolas, "Courier New",
-        monospace;
+body {
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    background: var(--shell-background);
+    color: #0f172a;
 }
 
-.App {
-    text-align: center;
-}
-
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
-}
-
-.App-header {
-    background-color: #282c34;
+.layout {
+    display: grid;
+    grid-template-columns: var(--panel-width) minmax(0, 1fr);
     min-height: 100vh;
+}
+
+.control-panel {
+    min-height: 100vh;
+    background: var(--panel-background);
+    border-right: 1px solid var(--border-color);
+    padding: 24px 18px;
     display: flex;
     flex-direction: column;
+    gap: 18px;
+    overflow-y: auto;
+}
+
+.map-panel {
+    min-width: 0;
+    min-height: 100vh;
+    background: var(--map-background);
+}
+
+.map {
+    width: 100%;
+    height: 100vh;
+}
+
+.leaflet-container {
+    background: var(--map-background);
+}
+
+.panel-section {
+    background: rgba(255, 255, 255, 0.75);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 16px;
+    padding: 18px;
+}
+
+.panel-intro {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.82) 0%, rgba(245, 249, 251, 0.92) 100%);
+}
+
+.eyebrow {
+    margin: 0 0 8px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #4b5563;
+}
+
+.panel-intro h1,
+.section-heading h2 {
+    margin: 0;
+    font-size: 1.15rem;
+    line-height: 1.2;
+}
+
+.panel-copy {
+    margin: 10px 0 0;
+    color: #475569;
+    font-size: 0.93rem;
+    line-height: 1.5;
+}
+
+.upload-form {
+    display: grid;
+    gap: 12px;
+}
+
+.drop-zone {
+    position: relative;
+    display: grid;
+    place-items: center;
+    gap: 8px;
+    min-height: 180px;
+    padding: 24px 18px;
+    text-align: center;
+    border: 2px dashed rgba(15, 23, 42, 0.2);
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.88) 0%, rgba(237, 244, 248, 0.9) 100%);
+    cursor: pointer;
+    transition: border-color 160ms ease, background-color 160ms ease, transform 160ms ease;
+}
+
+.drop-zone:hover,
+.drop-zone.is-dragover {
+    border-color: rgba(22, 78, 99, 0.55);
+    background: linear-gradient(180deg, rgba(244, 251, 255, 0.96) 0%, rgba(229, 240, 245, 0.96) 100%);
+    transform: translateY(-1px);
+}
+
+.drop-zone input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.drop-zone-title {
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.drop-zone-copy {
+    font-size: 0.88rem;
+    color: #475569;
+}
+
+.upload-limits {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #64748b;
+    line-height: 1.4;
+}
+
+.upload-button {
+    appearance: none;
+    border: 0;
+    border-radius: 12px;
+    padding: 12px 14px;
+    font: inherit;
+    font-weight: 700;
+    color: white;
+    background: linear-gradient(180deg, #0f766e 0%, #115e59 100%);
+    cursor: pointer;
+}
+
+.upload-button:hover {
+    filter: brightness(1.03);
+}
+
+.clear-button {
+    appearance: none;
+    border: 1px solid rgba(185, 28, 28, 0.18);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font: inherit;
+    font-weight: 700;
+    color: #991b1b;
+    background: rgba(254, 242, 242, 0.92);
+    cursor: pointer;
+}
+
+.clear-button:hover {
+    background: rgba(254, 226, 226, 0.96);
+}
+
+.status-message {
+    min-height: 1.2em;
+    margin: 0;
+    font-size: 0.88rem;
+    color: #334155;
+}
+
+.status-message.is-error {
+    color: #b91c1c;
+}
+
+.status-message.is-success {
+    color: #166534;
+}
+
+.uploads-section {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.section-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+
+.upload-count {
+    font-size: 0.78rem;
+    color: #475569;
+}
+
+.upload-list {
+    display: grid;
+    gap: 12px;
+    overflow-y: auto;
+    margin-top: 12px;
+}
+
+.upload-card {
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: 14px;
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.82);
+}
+
+.upload-card-header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.upload-card h3 {
+    margin: 0 0 6px;
+    font-size: 0.94rem;
+    word-break: break-word;
+}
+
+.delete-photo-button {
+    appearance: none;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 10px;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    font: inherit;
+    color: #991b1b;
+    background: rgba(255, 255, 255, 0.94);
+    cursor: pointer;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+    flex: 0 0 auto;
 }
 
-.App-link {
-    color: #61dafb;
+.delete-photo-button:hover {
+    background: rgba(254, 242, 242, 0.98);
 }
 
-.heart {
-    color: #ff0000;
+.delete-photo-button:disabled {
+    opacity: 0.55;
+    cursor: wait;
 }
 
-.small {
-    font-size: 0.75rem;
+.delete-photo-icon {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+}
+
+.upload-meta {
+    display: grid;
+    gap: 5px;
+    font-size: 0.82rem;
+    color: #475569;
+}
+
+.upload-meta strong {
+    color: #0f172a;
+}
+
+.empty-state {
+    margin: 0;
+    border: 1px dashed rgba(15, 23, 42, 0.12);
+    border-radius: 14px;
+    padding: 16px;
+    font-size: 0.88rem;
+    color: #475569;
+    background: rgba(255, 255, 255, 0.5);
+}
+
+@media (max-width: 900px) {
+    :root {
+        --panel-width: 100%;
+    }
+
+    .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: 160px minmax(0, 1fr);
+    }
+
+    .control-panel {
+        min-height: 160px;
+        border-right: 0;
+        border-bottom: 1px solid var(--border-color);
+        padding: 16px;
+    }
+
+    .map,
+    .map-panel {
+        min-height: calc(100vh - 160px);
+        height: calc(100vh - 160px);
+    }
+
+    .drop-zone {
+        min-height: 120px;
+    }
 }

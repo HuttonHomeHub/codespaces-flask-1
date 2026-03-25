@@ -1,13 +1,36 @@
-# GitHub Codespaces ♥️ Flask
+# Control Panel Map
 
-Welcome to your shiny new Codespace running Flask! We've got everything fired up and running for you to explore Flask.
+Simple Flask app with a two-pane layout:
 
-You've got a blank canvas to work on from a git perspective as well. There's a single initial commit with the what you're seeing right now - where you go from here is up to you!
+- Left side: drag-and-drop photo upload panel
+- Right side: Leaflet map
+- Default basemap: satellite imagery
+- Alternate basemap: street map via Leaflet's built-in layer control
+- Uploaded photos are saved on the server
+- Extracted image metadata is stored in SQLite
+- GPS-tagged uploads are shown on the map
 
-Everything you do here is contained within this one codespace. There is no repository on GitHub yet. If and when you’re ready you can click "Publish Branch" and we’ll create your repository and push up your project. If you were just exploring then and have no further need for this code then you can simply delete your codespace and it's gone forever.
+## Run
 
-To run this application:
-
+```bash
+.venv/bin/flask --debug run
 ```
+
+If you prefer activating the virtual environment first:
+
+```bash
+source .venv/bin/activate
 flask --debug run
 ```
+
+Open the root route in your browser after the server starts.
+
+## Uploads
+
+- Supported image types: JPG, JPEG, PNG, TIFF, WEBP
+- Uploads are stored in `uploads/`
+- Metadata is stored in `app.db`
+- Maximum upload count is 100 photos per request
+- Maximum upload size is 512 MB total per request
+- The browser warns the user before upload when either limit is exceeded
+- Individual photos can be deleted from the panel, which removes both the file and its database record

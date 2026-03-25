@@ -1,19 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
 <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ title }}</title>
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""
+    >
     <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}">
-
+</head>
 <body>
-    <div class="App">
-        <header class="App-header">
-            <img src="{{ url_for('static', filename='Octocat.png') }}" class="App-logo" alt="logo" />
-            <p>
-                GitHub Codespaces <span class="heart">♥️</span> Flask
-            </p>
-            <p class="small">
-                Edit <code>templates/index.html</code> and refresh to see your changes!
-            </p>
-        </header>
-    </div>
-</body>
+    <main class="layout">
+        <aside class="control-panel" aria-label="Control panel">
+            <section class="panel-section panel-intro">
+                <p class="eyebrow">Photo Intake</p>
+                <h1>Upload and index field photos</h1>
+                <p class="panel-copy">
+                    Drop one or more images here. Files are saved on the server, metadata is extracted,
+                    and GPS-tagged photos are placed on the map automatically.
+                </p>
+            </section>
 
+            <section class="panel-section">
+                <form
+                    id="upload-form"
+                    class="upload-form"
+                    data-max-files="{{ max_files_per_upload }}"
+                    data-max-total-bytes="{{ max_upload_total_bytes }}"
+                >
+                    <label id="drop-zone" class="drop-zone" for="photo-input">
+                        <input id="photo-input" name="photos" type="file" accept="image/*" multiple>
+                        <span class="drop-zone-title">Drag and drop photos</span>
+                        <span class="drop-zone-copy">or click to browse from this device</span>
+                    </label>
+                    <p class="upload-limits">
+                        Limit: up to {{ max_files_per_upload }} photos, {{ max_upload_total_label }} total per upload.
+                    </p>
+                    <button class="upload-button" type="submit">Upload Photos</button>
+                </form>
+                <p id="upload-status" class="status-message" aria-live="polite"></p>
+            </section>
+
+            <section class="panel-section uploads-section">
+                <div class="section-heading">
+                    <h2>Recent Uploads</h2>
+                    <span id="upload-count" class="upload-count">0 files</span>
+                </div>
+                <button id="clear-uploads-button" class="clear-button" type="button">Clear All Uploads</button>
+                <div id="upload-list" class="upload-list" aria-live="polite"></div>
+            </section>
+        </aside>
+        <section class="map-panel" aria-label="Map panel">
+            <div id="map" class="map" aria-label="Interactive map"></div>
+        </section>
+    </main>
+
+    <script
+        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""
+    ></script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
 </html>
