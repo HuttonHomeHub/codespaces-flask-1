@@ -39,6 +39,7 @@ Open the root route in your browser after the server starts.
 - Maximum upload count is 100 photos per request
 - Maximum upload size is 512 MB total per request
 - The browser warns the user before upload when either limit is exceeded
+- Upload API responses can contain a mix of successful imports and per-file errors in the same request
 - Individual photos can be deleted from the panel, which removes both the file and its database record
 - Clear All Uploads removes tracked uploaded photos and their database records
 

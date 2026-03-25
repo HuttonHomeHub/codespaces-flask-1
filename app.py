@@ -551,7 +551,9 @@ def save_incoming_file(file_storage):
     safe_name = secure_filename(original_filename)
     file_extension = Path(safe_name).suffix.lower()
     stored_filename = f"{uuid.uuid4().hex}{file_extension}"
-    saved_path = get_upload_dir() / stored_filename
+    upload_dir = get_upload_dir()
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = upload_dir / stored_filename
     file_storage.save(saved_path)
     return (original_filename, stored_filename, saved_path), None
 
@@ -641,6 +643,21 @@ def process_upload(file_storage):
             saved_path,
             original_filename,
         )
+    except RuntimeError as error:
+        saved_path.unlink(missing_ok=True)
+        return None, build_upload_error(original_filename, str(error))
+    except ValueError as error:
+        saved_path.unlink(missing_ok=True)
+        return None, build_upload_error(original_filename, str(error))
+    except Exception as error:
+        app.logger.exception("Failed to extract image metadata", exc_info=error)
+        saved_path.unlink(missing_ok=True)
+        return None, build_upload_error(
+            original_filename,
+            "Unable to extract metadata from this image.",
+        )
+
+    try:
         uploaded_photo, upload_error = persist_uploaded_photo(
             original_filename,
             stored_filename,
@@ -655,17 +672,12 @@ def process_upload(file_storage):
             saved_path.unlink(missing_ok=True)
             return None, upload_error
         return uploaded_photo, None
-    except RuntimeError as error:
-        saved_path.unlink(missing_ok=True)
-        return None, build_upload_error(original_filename, str(error))
-    except ValueError as error:
-        saved_path.unlink(missing_ok=True)
-        return None, build_upload_error(original_filename, str(error))
-    except Exception:
+    except Exception as error:
+        app.logger.exception("Failed to store uploaded photo metadata", exc_info=error)
         saved_path.unlink(missing_ok=True)
         return None, build_upload_error(
             original_filename,
-            "Unable to extract metadata from this image.",
+            "Server error while storing image metadata.",
         )
 
 

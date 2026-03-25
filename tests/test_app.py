@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -76,6 +77,70 @@ class PhotoAppTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json(), {"error": "No files were uploaded."})
 
+    def test_upload_rejects_unsupported_file_type(self):
+        response = self.client.post(
+            "/api/uploads",
+            data={"photos": (io.BytesIO(b"not an image"), "notes.txt")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "uploaded": [],
+                "errors": [{"file": "notes.txt", "error": "Unsupported image type."}],
+            },
+        )
+
+    def test_upload_duplicate_photo_returns_clear_error(self):
+        metadata = {"file_type": "JPEG", "file_size": "1 B", "file_type_extension": "jpg"}
+        extraction_result = (metadata, "duplicate-checksum", 1, "image/jpeg", None, None)
+
+        with patch.object(photo_app, "extract_image_metadata", return_value=extraction_result):
+            first_response = self.client.post(
+                "/api/uploads",
+                data={"photos": (io.BytesIO(b"image-1"), "first.jpg")},
+                content_type="multipart/form-data",
+            )
+            second_response = self.client.post(
+                "/api/uploads",
+                data={"photos": (io.BytesIO(b"image-2"), "second.jpg")},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 400)
+        second_payload = second_response.get_json()
+        self.assertEqual(second_payload["uploaded"], [])
+        self.assertEqual(len(second_payload["errors"]), 1)
+        self.assertEqual(second_payload["errors"][0]["file"], "second.jpg")
+        self.assertIn("Duplicate photo already imported as first.jpg", second_payload["errors"][0]["error"])
+
+    def test_upload_storage_failure_reports_server_error(self):
+        metadata = {"file_type": "JPEG", "file_size": "1 B", "file_type_extension": "jpg"}
+        extraction_result = (metadata, "checksum", 1, "image/jpeg", None, None)
+
+        with patch.object(photo_app, "extract_image_metadata", return_value=extraction_result):
+            with patch.object(photo_app, "persist_uploaded_photo", side_effect=RuntimeError("db unavailable")):
+                with self.assertLogs(photo_app.app.logger.name, level="ERROR"):
+                    response = self.client.post(
+                        "/api/uploads",
+                        data={"photos": (io.BytesIO(b"image-1"), "first.jpg")},
+                        content_type="multipart/form-data",
+                    )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "uploaded": [],
+                "errors": [
+                    {"file": "first.jpg", "error": "Server error while storing image metadata."}
+                ],
+            },
+        )
+
     def test_clear_uploaded_photos_only_removes_tracked_files(self):
         self.insert_photo()
         tracked_file = self.upload_dir / "tracked.jpg"
@@ -108,6 +173,12 @@ class PhotoAppTestCase(unittest.TestCase):
 
         self.assertIsNotNone(remaining)
         self.assertEqual(remaining["stored_filename"], "tracked.jpg")
+
+    def test_delete_photo_api_returns_not_found_for_missing_record(self):
+        response = self.client.delete("/api/photos/999")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.get_json(), {"error": "Photo not found."})
 
 
 if __name__ == "__main__":

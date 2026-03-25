@@ -99,6 +99,10 @@ function formatCountLabel(count, singularLabel) {
     return `${count} ${singularLabel}${count === 1 ? "" : "s"}`;
 }
 
+function getReadyToUploadMessage(count) {
+    return `${formatCountLabel(count, "file")} ready to upload.`;
+}
+
 function setStatus(message, tone = "") {
     uploadStatus.textContent = message;
     uploadStatus.className = tone ? `status-message is-${tone}` : "status-message";
@@ -200,6 +204,16 @@ function getCameraLabel(metadata) {
 
 function getCapturedLabel(photo) {
     return photo.metadata?.date_time_original || photo.metadata?.create_date || formatDate(photo.uploaded_at);
+}
+
+function updatePendingFiles(files) {
+    pendingFiles = files;
+    if (!files.length) {
+        setStatus("");
+        return;
+    }
+
+    setStatus(getReadyToUploadMessage(files.length));
 }
 
 function normalizeBearing(degrees) {
@@ -600,7 +614,7 @@ async function uploadSelectedFiles() {
         formData.append("photos", file);
     });
 
-    setStatus(`Uploading ${files.length} file${files.length === 1 ? "" : "s"}...`);
+    setStatus(`Uploading ${formatCountLabel(files.length, "file")}...`);
 
     const response = await fetch("/api/uploads", {
         method: "POST",
@@ -624,7 +638,7 @@ async function uploadSelectedFiles() {
         setStatus(`Uploaded ${formatCountLabel(uploadedCount, "file")}.`, "success");
     }
 
-    pendingFiles = [];
+    updatePendingFiles([]);
     photoInput.value = "";
     await loadPhotos();
 }
@@ -648,7 +662,7 @@ async function clearUploads() {
         throw new Error(payload.error || "Unable to clear uploaded photos.");
     }
 
-    pendingFiles = [];
+    updatePendingFiles([]);
     photoInput.value = "";
     await loadPhotos();
     setStatus(
@@ -739,31 +753,28 @@ dropZone.addEventListener("drop", (event) => {
 
     const nextFiles = Array.from(files);
     if (!validateSelectedFiles(nextFiles)) {
-        pendingFiles = [];
+        updatePendingFiles([]);
         return;
     }
 
-    pendingFiles = nextFiles;
-    setStatus(`${formatCountLabel(files.length, "file")} ready to upload.`);
+    updatePendingFiles(nextFiles);
 });
 
 photoInput.addEventListener("change", () => {
     const files = photoInput.files;
     if (!files.length) {
-        pendingFiles = [];
-        setStatus("");
+        updatePendingFiles([]);
         return;
     }
 
     const nextFiles = Array.from(files);
     if (!validateSelectedFiles(nextFiles)) {
-        pendingFiles = [];
+        updatePendingFiles([]);
         photoInput.value = "";
         return;
     }
 
-    pendingFiles = nextFiles;
-    setStatus(`${formatCountLabel(files.length, "file")} ready to upload.`);
+    updatePendingFiles(nextFiles);
 });
 
 loadPhotos().catch(() => {
