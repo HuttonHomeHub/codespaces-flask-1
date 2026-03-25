@@ -7,7 +7,7 @@ Simple Flask app with a two-pane layout:
 - Default basemap: satellite imagery
 - Alternate basemap: street map via Leaflet's built-in layer control
 - Uploaded photos are saved on the server
-- Extracted image metadata is stored in SQLite
+- Extracted image metadata is stored in SQLite as a curated summary plus raw metadata
 - GPS-tagged uploads are shown on the map
 
 ## Run
@@ -36,6 +36,7 @@ Open the root route in your browser after the server starts.
 - Supported image types: JPG, JPEG, PNG, TIFF, WEBP
 - Uploads are stored in `uploads/`
 - Metadata is stored in `app.db`
+- New uploads store a smaller curated metadata summary for the UI and map logic, while preserving raw extracted metadata for drill-down and future use
 - Maximum upload count is 100 photos per request
 - Maximum upload size is 512 MB total per request
 - The browser warns the user before upload when either limit is exceeded

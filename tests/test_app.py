@@ -1,8 +1,8 @@
 import io
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import app as photo_app
@@ -33,7 +33,7 @@ class PhotoAppTestCase(unittest.TestCase):
         photo_app.app.config.update(self.original_config)
 
     def insert_photo(self, stored_filename="tracked.jpg", original_filename="tracked.jpg"):
-        metadata = '{"file_type": "JPEG", "file_size": "1 B"}'
+        metadata = '{"summary": {"file_type": "JPEG", "file_size": "1 B"}, "raw": {"artist": "Unit Test"}}'
         with photo_app.get_db_connection() as connection:
             connection.execute(
                 """
@@ -97,7 +97,11 @@ class PhotoAppTestCase(unittest.TestCase):
             ),
         )
 
-        with patch.object(photo_app, "load_image_dependencies", return_value=(None, None, None, mock_piexif)):
+        with patch.object(
+            photo_app,
+            "load_image_dependencies",
+            return_value=(None, None, None, mock_piexif),
+        ):
             with patch.object(mock_piexif, "load", wraps=mock_piexif.load) as piexif_load:
                 metadata, latitude, longitude = photo_app.extract_exif_metadata(
                     self.upload_dir / "sample.jpg",
@@ -163,8 +167,52 @@ class PhotoAppTestCase(unittest.TestCase):
             },
         )
 
+    def test_list_photos_normalizes_legacy_flat_metadata(self):
+        with photo_app.get_db_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO photos (
+                    original_filename,
+                    stored_filename,
+                    checksum,
+                    file_size_bytes,
+                    file_type,
+                    file_type_extension,
+                    mime_type,
+                    metadata_json,
+                    latitude,
+                    longitude,
+                    uploaded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy.jpg",
+                    "legacy.jpg",
+                    "checksum",
+                    1,
+                    "JPEG",
+                    "jpg",
+                    "image/jpeg",
+                    '{"file_type": "JPEG", "file_size": "1 B", "make": "Canon", "artist": "Legacy"}',
+                    None,
+                    None,
+                    "2026-03-25T00:00:00+00:00",
+                ),
+            )
+
+        response = self.client.get("/api/photos")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["photos"][0]["metadata"]["file_type"], "JPEG")
+        self.assertEqual(payload["photos"][0]["metadata"]["make"], "Canon")
+        self.assertEqual(payload["photos"][0]["raw_metadata"]["artist"], "Legacy")
+
     def test_upload_duplicate_photo_returns_clear_error(self):
-        metadata = {"file_type": "JPEG", "file_size": "1 B", "file_type_extension": "jpg"}
+        metadata = {
+            "summary": {"file_type": "JPEG", "file_size": "1 B", "file_type_extension": "jpg"},
+            "raw": {},
+        }
         extraction_result = (metadata, "duplicate-checksum", 1, "image/jpeg", None, None)
 
         with patch.object(photo_app, "extract_image_metadata", return_value=extraction_result):
@@ -188,7 +236,10 @@ class PhotoAppTestCase(unittest.TestCase):
         self.assertIn("Duplicate photo already imported as first.jpg", second_payload["errors"][0]["error"])
 
     def test_upload_storage_failure_reports_server_error(self):
-        metadata = {"file_type": "JPEG", "file_size": "1 B", "file_type_extension": "jpg"}
+        metadata = {
+            "summary": {"file_type": "JPEG", "file_size": "1 B", "file_type_extension": "jpg"},
+            "raw": {},
+        }
         extraction_result = (metadata, "checksum", 1, "image/jpeg", None, None)
 
         with patch.object(photo_app, "extract_image_metadata", return_value=extraction_result):

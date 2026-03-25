@@ -18,6 +18,32 @@ DATABASE_PATH = BASE_DIR / "app.db"
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp"}
 MAX_FILES_PER_UPLOAD = 100
 MAX_UPLOAD_TOTAL_BYTES = 512 * 1024 * 1024
+SUMMARY_METADATA_KEYS = (
+    "file_type",
+    "file_size",
+    "image_size",
+    "image_width",
+    "image_height",
+    "megapixels",
+    "make",
+    "model",
+    "date_time_original",
+    "create_date",
+    "focal_length_35mm_equivalent",
+    "horizontal_field_of_view_degrees",
+    "direction_degrees",
+    "direction_reference",
+    "gps_latitude_decimal",
+    "gps_longitude_decimal",
+    "file_type_extension",
+    "mime_type",
+)
+RAW_METADATA_EXCLUDED_KEYS = {
+    "category",
+    "checksum",
+    "file_name",
+    "file_size_bytes",
+}
 
 
 app = Flask(__name__)
@@ -268,6 +294,57 @@ def serialize_metadata_value(value):
     return converted
 
 
+def has_metadata_value(value):
+    return value not in (None, "", [], {})
+
+
+def build_curated_metadata(metadata):
+    curated_metadata = {}
+    for key in SUMMARY_METADATA_KEYS:
+        value = metadata.get(key)
+        if has_metadata_value(value):
+            curated_metadata[key] = value
+    return curated_metadata
+
+
+def build_raw_metadata(metadata, curated_keys=None):
+    curated_keys = curated_keys or set()
+    raw_metadata = {}
+    for key in sorted(metadata):
+        if key in curated_keys or key in RAW_METADATA_EXCLUDED_KEYS:
+            continue
+
+        value = metadata.get(key)
+        if has_metadata_value(value):
+            raw_metadata[key] = value
+
+    return raw_metadata
+
+
+def build_metadata_payload(metadata):
+    curated_metadata = build_curated_metadata(metadata)
+    raw_metadata = build_raw_metadata(metadata, set(curated_metadata))
+    return {
+        "summary": curated_metadata,
+        "raw": raw_metadata,
+    }
+
+
+def normalize_metadata_payload(metadata_payload):
+    if not isinstance(metadata_payload, dict):
+        return {"summary": {}, "raw": {}}
+
+    if "summary" in metadata_payload or "raw" in metadata_payload:
+        summary = metadata_payload.get("summary")
+        raw = metadata_payload.get("raw")
+        return {
+            "summary": summary if isinstance(summary, dict) else {},
+            "raw": raw if isinstance(raw, dict) else {},
+        }
+
+    return build_metadata_payload(metadata_payload)
+
+
 def gps_to_decimal(values, reference):
     if not values or len(values) != 3:
         return None
@@ -458,11 +535,11 @@ def extract_image_metadata(image_path, original_filename):
     metadata.update(exif_metadata)
     add_derived_camera_metadata(metadata)
 
-    return metadata, checksum, file_size_bytes, mime_type, latitude, longitude
+    return build_metadata_payload(metadata), checksum, file_size_bytes, mime_type, latitude, longitude
 
 
 def serialize_photo(row):
-    metadata = json.loads(row["metadata_json"])
+    metadata_payload = normalize_metadata_payload(json.loads(row["metadata_json"]))
     return {
         "id": row["id"],
         "original_filename": row["original_filename"],
@@ -474,7 +551,8 @@ def serialize_photo(row):
         "longitude": row["longitude"],
         "uploaded_at": row["uploaded_at"],
         "image_url": f"/uploads/{row['stored_filename']}",
-        "metadata": metadata,
+        "metadata": metadata_payload["summary"],
+        "raw_metadata": metadata_payload["raw"],
     }
 
 
@@ -600,11 +678,13 @@ def persist_uploaded_photo(
     checksum,
     file_size_bytes,
     mime_type,
-    metadata,
+    metadata_payload,
     latitude,
     longitude,
 ):
     uploaded_at = datetime.now(timezone.utc).isoformat()
+    normalized_metadata_payload = normalize_metadata_payload(metadata_payload)
+    summary_metadata = normalized_metadata_payload["summary"]
 
     with get_db_connection() as connection:
         insert_cursor = connection.execute(
@@ -634,10 +714,10 @@ def persist_uploaded_photo(
                 stored_filename,
                 checksum,
                 file_size_bytes,
-                metadata.get("file_type"),
-                metadata.get("file_type_extension"),
+                summary_metadata.get("file_type"),
+                summary_metadata.get("file_type_extension"),
                 mime_type,
-                json.dumps(metadata, ensure_ascii=True, sort_keys=True),
+                json.dumps(normalized_metadata_payload, ensure_ascii=True, sort_keys=True),
                 latitude,
                 longitude,
                 uploaded_at,

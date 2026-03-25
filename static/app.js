@@ -16,6 +16,11 @@ const cancelUploadButton = document.getElementById("cancel-upload-button");
 const uploadList = document.getElementById("upload-list");
 const uploadCount = document.getElementById("upload-count");
 const clearUploadsButton = document.getElementById("clear-uploads-button");
+const metadataDrawer = document.getElementById("metadata-drawer");
+const metadataDrawerTitle = document.getElementById("metadata-drawer-title");
+const metadataDrawerBody = document.getElementById("metadata-drawer-body");
+const metadataDrawerClose = document.getElementById("metadata-drawer-close");
+const drawerBackdrop = document.getElementById("drawer-backdrop");
 const photoMarkers = L.layerGroup().addTo(map);
 const fieldOfViewLayer = L.layerGroup().addTo(map);
 const HEATMAP_RADIUS_PX = 36;
@@ -47,12 +52,212 @@ let cancelUploadRequested = false;
 let activeUploadRequest = null;
 let statusResetTimer = null;
 let currentPhotos = [];
+let activeDrawerPhotoId = null;
+let lastDrawerTrigger = null;
 const DEFAULT_HORIZONTAL_FOV_DEGREES = 55;
 const MIN_HORIZONTAL_FOV_DEGREES = 12;
 const TARGET_FRAME_WIDTH_METERS = 90;
 const MIN_VIEWING_DISTANCE_METERS = 30;
 const MAX_VIEWING_DISTANCE_METERS = 250;
 const SUCCESS_STATUS_TIMEOUT_MS = 5000;
+const RAW_METADATA_PRIORITY_KEYS = [
+    "lens_model",
+    "software",
+    "artist",
+    "copyright",
+    "exposure_time",
+    "f_number",
+    "iso_speed_ratings",
+    "white_balance",
+    "flash",
+];
+const HIDDEN_RAW_METADATA_KEYS = new Set([
+    "aperturevalue",
+    "brightnessvalue",
+    "componentsconfiguration",
+    "compression",
+    "datetime",
+    "datetimedigitized",
+    "datetimeoriginal",
+    "dpi",
+    "exiftag",
+    "exifversion",
+    "exposurebiasvalue",
+    "exposuremode",
+    "exposureprogram",
+    "flashpixversion",
+    "gpsaltituderef",
+    "gpsdatestamp",
+    "gpsdestbearingref",
+    "gpsimgdirectionref",
+    "gpslatitude",
+    "gpslatituderef",
+    "gpslongitude",
+    "gpslongituderef",
+    "gpsspeed",
+    "gpsspeedref",
+    "gpstag",
+    "gpstimestamp",
+    "hostcomputer",
+    "icc_profile",
+    "jpeginterchangeformat",
+    "jpeginterchangeformatlength",
+    "lensmake",
+    "lensspecification",
+    "makernote",
+    "meteringmode",
+    "offsettime",
+    "offsettimedigitized",
+    "offsettimeoriginal",
+    "orientation",
+    "pixelxdimension",
+    "pixelydimension",
+    "resolutionunit",
+    "scenecapturetype",
+    "scenetype",
+    "sensingmethod",
+    "shutterspeedvalue",
+    "subjectarea",
+    "subsectimedigitized",
+    "subsectimeoriginal",
+    "xresolution",
+    "ycbcrpositioning",
+    "yresolution",
+]);
+const markerByPhotoId = new Map();
+const METADATA_LABEL_OVERRIDES = {
+    aperturevalue: "Aperture Value",
+    artist: "Artist",
+    brightnessvalue: "Brightness Value",
+    colorspace: "Color Space",
+    componentsconfiguration: "Components Configuration",
+    compression: "Compression",
+    datetime: "Modified",
+    datetimedigitized: "Digitized",
+    datetimeoriginal: "Captured",
+    dpi: "DPI",
+    exiftag: "EXIF Tag Offset",
+    exifversion: "EXIF Version",
+    exposurebiasvalue: "Exposure Compensation",
+    exposuremode: "Exposure Mode",
+    exposureprogram: "Exposure Program",
+    exposuretime: "Exposure Time",
+    flash: "Flash",
+    flashpixversion: "FlashPix Version",
+    fnumber: "Aperture",
+    focallength: "Focal Length",
+    focallengthin35mmfilm: "35mm Equivalent",
+    gpsaltitude: "Altitude",
+    gpsaltituderef: "Altitude Reference",
+    gpsdatestamp: "GPS Date",
+    gpsdestbearing: "Destination Bearing",
+    gpsdestbearingref: "Destination Bearing Reference",
+    gpshpositioningerror: "GPS Accuracy",
+    gpsimgdirection: "Image Direction",
+    gpsimgdirectionref: "Image Direction Reference",
+    gpslatitude: "Latitude (DMS)",
+    gpslatituderef: "Latitude Reference",
+    gpslongitude: "Longitude (DMS)",
+    gpslongituderef: "Longitude Reference",
+    gpsspeed: "GPS Speed",
+    gpsspeedref: "GPS Speed Unit",
+    gpstag: "GPS Tag Offset",
+    gpstimestamp: "GPS Time",
+    hostcomputer: "Host Computer",
+    icc_profile: "ICC Profile",
+    isospeedratings: "ISO",
+    jpeginterchangeformat: "JPEG Preview Offset",
+    jpeginterchangeformatlength: "JPEG Preview Length",
+    lensmake: "Lens Make",
+    lensmodel: "Lens Model",
+    lensspecification: "Lens Specification",
+    makernote: "Maker Note",
+    meteringmode: "Metering Mode",
+    offsettime: "Offset Time",
+    offsettimedigitized: "Digitized Offset",
+    offsettimeoriginal: "Capture Offset",
+    orientation: "Orientation",
+    pixelxdimension: "Pixel Width",
+    pixelydimension: "Pixel Height",
+    resolutionunit: "Resolution Unit",
+    scenecapturetype: "Scene Capture Type",
+    scenetype: "Scene Type",
+    sensingmethod: "Sensing Method",
+    shutterspeedvalue: "Shutter Speed Value",
+    software: "Software",
+    subjectarea: "Subject Area",
+    subsectimedigitized: "Digitized Subsecond",
+    subsectimeoriginal: "Capture Subsecond",
+    whitebalance: "White Balance",
+    xresolution: "Horizontal Resolution",
+    ycbcrpositioning: "YCbCr Positioning",
+    yresolution: "Vertical Resolution",
+};
+const METADATA_ENUM_LABELS = {
+    colorspace: {
+        1: "sRGB",
+        65535: "Uncalibrated",
+    },
+    exposuremode: {
+        0: "Automatic exposure",
+        1: "Manual exposure",
+        2: "Auto bracket",
+    },
+    exposureprogram: {
+        0: "Undefined",
+        1: "Manual",
+        2: "Normal program",
+        3: "Aperture priority",
+        4: "Shutter priority",
+        5: "Creative program",
+        6: "Action program",
+        7: "Portrait mode",
+        8: "Landscape mode",
+    },
+    meteringmode: {
+        0: "Unknown",
+        1: "Average",
+        2: "Center-weighted average",
+        3: "Spot",
+        4: "Multi-spot",
+        5: "Pattern",
+        6: "Partial",
+        255: "Other",
+    },
+    orientation: {
+        1: "Normal",
+        3: "Rotated 180 degrees",
+        6: "Rotated 90 degrees clockwise",
+        8: "Rotated 90 degrees counter-clockwise",
+    },
+    resolutionunit: {
+        2: "Pixels per inch",
+        3: "Pixels per centimeter",
+    },
+    scenecapturetype: {
+        0: "Standard",
+        1: "Landscape",
+        2: "Portrait",
+        3: "Night scene",
+    },
+    sensingmethod: {
+        1: "Not defined",
+        2: "One-chip color area sensor",
+        3: "Two-chip color area sensor",
+        4: "Three-chip color area sensor",
+        5: "Color sequential area sensor",
+        7: "Trilinear sensor",
+        8: "Color sequential linear sensor",
+    },
+    whitebalance: {
+        0: "Auto",
+        1: "Manual",
+    },
+    ycbcrpositioning: {
+        1: "Centered",
+        2: "Co-sited",
+    },
+};
 
 const satelliteLayer = L.tileLayer(
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -262,12 +467,617 @@ function formatDate(value) {
         return "Unknown";
     }
 
+    const exifMatch = String(value).match(
+        /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/
+    );
+    if (exifMatch) {
+        const [, year, month, day, hour, minute, second] = exifMatch;
+        const date = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`);
+        if (!Number.isNaN(date.getTime())) {
+            return date.toLocaleString();
+        }
+    }
+
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) {
         return value;
     }
 
     return date.toLocaleString();
+}
+
+function formatMetadataLabel(key) {
+    if (Object.hasOwn(METADATA_LABEL_OVERRIDES, key)) {
+        return METADATA_LABEL_OVERRIDES[key];
+    }
+
+    return String(key || "")
+        .split("_")
+        .filter(Boolean)
+        .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+        .join(" ");
+}
+
+function parseRationalString(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const parts = value.split(",").map((part) => part.trim()).filter(Boolean);
+    if (parts.length !== 2) {
+        return null;
+    }
+
+    const numerator = Number(parts[0]);
+    const denominator = Number(parts[1]);
+    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+        return null;
+    }
+
+    return { numerator, denominator, value: numerator / denominator };
+}
+
+function parseRationalSequence(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const parts = value.split(",").map((part) => part.trim()).filter(Boolean);
+    if (!parts.length || parts.length % 2 !== 0) {
+        return null;
+    }
+
+    const pairs = [];
+    for (let index = 0; index < parts.length; index += 2) {
+        const numerator = Number(parts[index]);
+        const denominator = Number(parts[index + 1]);
+        if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+            return null;
+        }
+
+        pairs.push({ numerator, denominator, value: numerator / denominator });
+    }
+
+    return pairs;
+}
+
+function formatNumber(value, maximumFractionDigits = 2) {
+    if (!Number.isFinite(value)) {
+        return "Unknown";
+    }
+
+    return new Intl.NumberFormat(undefined, {
+        maximumFractionDigits,
+    }).format(value);
+}
+
+function formatExifVersion(value) {
+    if (typeof value !== "string" || value.length < 4) {
+        return String(value);
+    }
+
+    return `${value.slice(0, 2)}.${value.slice(2)}`;
+}
+
+function formatFlashValue(value) {
+    const numericValue = Number(value);
+    if (!Number.isInteger(numericValue)) {
+        return String(value);
+    }
+
+    const parts = [];
+    parts.push(numericValue & 1 ? "Flash fired" : "Flash did not fire");
+
+    const mode = numericValue & 24;
+    if (mode === 8) {
+        parts.push("Compulsory flash");
+    } else if (mode === 16) {
+        parts.push("Flash suppressed");
+    } else if (mode === 24) {
+        parts.push("Auto flash mode");
+    }
+
+    if (numericValue & 32) {
+        parts.push("No flash function");
+    }
+
+    if (numericValue & 64) {
+        parts.push("Red-eye reduction");
+    }
+
+    return parts.join(", ");
+}
+
+function formatCoordinateDms(value, reference) {
+    const sequence = parseRationalSequence(value);
+    if (!sequence || sequence.length !== 3) {
+        return String(value);
+    }
+
+    const [degrees, minutes, seconds] = sequence.map((item) => item.value);
+    const refLabel = reference ? ` ${reference}` : "";
+    return `${formatNumber(degrees, 0)}° ${formatNumber(minutes, 0)}' ${formatNumber(seconds, 2)}\"${refLabel}`;
+}
+
+function formatGpsTimestamp(value) {
+    const sequence = parseRationalSequence(value);
+    if (!sequence || sequence.length !== 3) {
+        return String(value);
+    }
+
+    const [hours, minutes, seconds] = sequence.map((item) => Math.round(item.value));
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")} UTC`;
+}
+
+function formatRationalMetric(value, unit, maximumFractionDigits = 2) {
+    const rational = parseRationalString(value);
+    if (!rational) {
+        return String(value);
+    }
+
+    return `${formatNumber(rational.value, maximumFractionDigits)} ${unit}`;
+}
+
+function formatExposureTime(value) {
+    const rational = parseRationalString(value);
+    if (!rational) {
+        return String(value);
+    }
+
+    if (rational.value >= 1) {
+        return `${formatNumber(rational.value, 1)} s`;
+    }
+
+    return `1/${formatNumber(rational.denominator / rational.numerator, 0)} s`;
+}
+
+function formatApertureValue(value) {
+    const rational = parseRationalString(value);
+    if (!rational) {
+        return String(value);
+    }
+
+    return `${formatNumber(rational.value, 1)} EV`;
+}
+
+function formatFNumber(value) {
+    const rational = parseRationalString(value);
+    if (!rational) {
+        return String(value);
+    }
+
+    return `f/${formatNumber(rational.value, 1)}`;
+}
+
+function formatShutterSpeedValue(value) {
+    const rational = parseRationalString(value);
+    if (!rational) {
+        return String(value);
+    }
+
+    return `${formatNumber(rational.value, 2)} EV`;
+}
+
+function formatFocalLengthValue(value) {
+    return formatRationalMetric(value, "mm", 1);
+}
+
+function formatAltitudeValue(value, altitudeReference) {
+    const rational = parseRationalString(value);
+    if (!rational) {
+        return String(value);
+    }
+
+    const signedValue = String(altitudeReference) === "1" ? rational.value * -1 : rational.value;
+    return `${formatNumber(signedValue, 1)} m`;
+}
+
+function formatDirectionValue(value, reference) {
+    const rational = parseRationalString(value);
+    if (!rational) {
+        return String(value);
+    }
+
+    const refLabel = reference === "T" ? " true" : reference === "M" ? " magnetic" : "";
+    return `${formatNumber(rational.value, 1)}°${refLabel}`;
+}
+
+function formatDpiValue(value) {
+    const sequence = parseRationalSequence(value);
+    if (!sequence || sequence.length !== 2) {
+        return String(value);
+    }
+
+    return `${formatNumber(sequence[0].value, 0)} x ${formatNumber(sequence[1].value, 0)} dpi`;
+}
+
+function formatLensSpecification(value) {
+    const sequence = parseRationalSequence(value);
+    if (!sequence || sequence.length !== 4) {
+        return String(value);
+    }
+
+    return `${formatNumber(sequence[0].value, 2)}-${formatNumber(sequence[1].value, 1)} mm, f/${formatNumber(sequence[2].value, 1)}-${formatNumber(sequence[3].value, 1)}`;
+}
+
+function formatSubjectArea(value) {
+    const parts = String(value)
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+    if (parts.length === 4) {
+        return `Center ${parts[0]}, ${parts[1]} with size ${parts[2]} x ${parts[3]}`;
+    }
+
+    return String(value);
+}
+
+function formatBinaryText(value) {
+    const match = String(value).match(/^\(Binary data (\d+) bytes\)$/);
+    if (!match) {
+        return String(value);
+    }
+
+    return `Binary data, ${formatNumber(Number(match[1]), 0)} bytes`;
+}
+
+function getMetadataValue(photo, keys) {
+    const summary = photo.metadata || {};
+    const raw = photo.raw_metadata || {};
+
+    for (const key of keys) {
+        if (summary[key] !== undefined && summary[key] !== null && summary[key] !== "") {
+            return summary[key];
+        }
+        if (raw[key] !== undefined && raw[key] !== null && raw[key] !== "") {
+            return raw[key];
+        }
+    }
+
+    return null;
+}
+
+function formatMetadataValue(key, value, metadataContext = {}) {
+    if (value === null || value === undefined || value === "") {
+        return "Unknown";
+    }
+
+    if (Array.isArray(value)) {
+        return value.map((item) => formatMetadataValue(key, item, metadataContext)).join(", ");
+    }
+
+    if (typeof value === "object") {
+        return JSON.stringify(value);
+    }
+
+    if (String(value).startsWith("(Binary data")) {
+        return formatBinaryText(value);
+    }
+
+    if (["date_time_original", "create_date", "datetime", "datetimedigitized", "datetimeoriginal"].includes(key)) {
+        return formatDate(value);
+    }
+
+    if (["exifversion", "flashpixversion"].includes(key)) {
+        return formatExifVersion(String(value));
+    }
+
+    if (["exposuretime"].includes(key)) {
+        return formatExposureTime(String(value));
+    }
+
+    if (["fnumber"].includes(key)) {
+        return formatFNumber(String(value));
+    }
+
+    if (["aperturevalue", "brightnessvalue", "exposurebiasvalue"].includes(key)) {
+        return formatApertureValue(String(value));
+    }
+
+    if (["focallength"].includes(key)) {
+        return formatFocalLengthValue(String(value));
+    }
+
+    if (["focallengthin35mmfilm"].includes(key)) {
+        return `${formatNumber(Number(value), 0)} mm`;
+    }
+
+    if (["gpsaltitude"].includes(key)) {
+        return formatAltitudeValue(String(value), metadataContext.gpsaltituderef);
+    }
+
+    if (["gpsdestbearing", "gpsimgdirection"].includes(key)) {
+        return formatDirectionValue(String(value), metadataContext[`${key}ref`] || metadataContext.direction_reference);
+    }
+
+    if (["gpslatitude"].includes(key)) {
+        return formatCoordinateDms(String(value), metadataContext.gpslatituderef);
+    }
+
+    if (["gpslongitude"].includes(key)) {
+        return formatCoordinateDms(String(value), metadataContext.gpslongituderef);
+    }
+
+    if (["gpshpositioningerror", "gpsspeed"].includes(key)) {
+        return formatRationalMetric(String(value), key === "gpsspeed" ? (metadataContext.gpsspeedref === "K" ? "km/h" : "m/s") : "m", 1);
+    }
+
+    if (["gpstimestamp"].includes(key)) {
+        return formatGpsTimestamp(String(value));
+    }
+
+    if (["dpi"].includes(key)) {
+        return formatDpiValue(String(value));
+    }
+
+    if (["lensspecification"].includes(key)) {
+        return formatLensSpecification(String(value));
+    }
+
+    if (["subjectarea"].includes(key)) {
+        return formatSubjectArea(String(value));
+    }
+
+    if (["shutterspeedvalue"].includes(key)) {
+        return formatShutterSpeedValue(String(value));
+    }
+
+    if (["offsettime", "offsettimedigitized", "offsettimeoriginal"].includes(key)) {
+        return value === "Z" ? "UTC" : String(value);
+    }
+
+    if (["flash"].includes(key)) {
+        return formatFlashValue(value);
+    }
+
+    if (Object.hasOwn(METADATA_ENUM_LABELS, key)) {
+        const normalizedValue = Number(value);
+        if (Object.hasOwn(METADATA_ENUM_LABELS[key], normalizedValue)) {
+            return METADATA_ENUM_LABELS[key][normalizedValue];
+        }
+    }
+
+    return String(value);
+}
+
+function findPhotoById(photoId) {
+    const numericPhotoId = Number(photoId);
+    return currentPhotos.find((photo) => photo.id === numericPhotoId) || null;
+}
+
+function buildMetadataRows(photo, excludedKeys = new Set()) {
+    const metadata = photo.raw_metadata || {};
+    const filteredKeys = Object.keys(metadata).filter(
+        (key) => !excludedKeys.has(key) && !HIDDEN_RAW_METADATA_KEYS.has(key)
+    );
+    const orderedKeys = [
+        ...RAW_METADATA_PRIORITY_KEYS.filter(
+            (key) => filteredKeys.includes(key) && Object.hasOwn(metadata, key)
+        ),
+        ...filteredKeys
+            .filter((key) => !RAW_METADATA_PRIORITY_KEYS.includes(key))
+            .sort((leftKey, rightKey) => leftKey.localeCompare(rightKey)),
+    ];
+
+    if (!orderedKeys.length) {
+        return `
+            <div class="metadata-row">
+                <dt>Additional metadata</dt>
+                <dd>No additional metadata extracted for this photo.</dd>
+            </div>
+        `;
+    }
+
+    return orderedKeys
+        .map(
+            (key) => `
+                <div class="metadata-row">
+                    <dt>${escapeHtml(formatMetadataLabel(key))}</dt>
+                    <dd>${escapeHtml(formatMetadataValue(key, metadata[key], metadata))}</dd>
+                </div>
+            `
+        )
+        .join("");
+}
+
+function buildDetailRows(entries) {
+    const visibleEntries = entries.filter((entry) => entry.value && entry.value !== "Unknown");
+    if (!visibleEntries.length) {
+        return `
+            <div class="metadata-row">
+                <dt>Details</dt>
+                <dd>No additional details available.</dd>
+            </div>
+        `;
+    }
+
+    return visibleEntries
+        .map(
+            (entry) => `
+                <div class="metadata-row">
+                    <dt>${escapeHtml(entry.label)}</dt>
+                    <dd>${escapeHtml(entry.value)}</dd>
+                </div>
+            `
+        )
+        .join("");
+}
+
+function closeMetadataDrawer({ restoreFocus = true } = {}) {
+    activeDrawerPhotoId = null;
+    metadataDrawer.hidden = true;
+    metadataDrawer.setAttribute("aria-hidden", "true");
+    drawerBackdrop.hidden = true;
+    document.body.classList.remove("drawer-open");
+
+    if (restoreFocus && lastDrawerTrigger instanceof HTMLElement) {
+        lastDrawerTrigger.focus();
+    }
+}
+
+function openMetadataDrawer(photo, triggerElement) {
+    const metadata = photo.metadata || {};
+    const rawMetadata = photo.raw_metadata || {};
+    const exposedRawKeys = new Set([
+        "software",
+        "lensmodel",
+        "lensmake",
+        "isospeedratings",
+        "exposuretime",
+        "fnumber",
+        "focallength",
+        "focallengthin35mmfilm",
+        "flash",
+        "whitebalance",
+        "gpsaltitude",
+        "gpshpositioningerror",
+        "gpsimgdirection",
+        "gpsimgdirectionref",
+        "gpsdestbearing",
+        "gpsdestbearingref",
+    ]);
+    const summaryEntries = [
+        { label: "Camera", value: getCameraLabel(metadata) },
+        { label: "Captured", value: getCapturedLabel(photo) },
+        {
+            label: "Location",
+            value:
+                photo.latitude !== null && photo.longitude !== null
+                    ? `${formatNumber(photo.latitude, 6)}, ${formatNumber(photo.longitude, 6)}`
+                    : "No GPS data",
+        },
+        { label: "Type", value: metadata.file_type || "Unknown" },
+        { label: "Size", value: metadata.file_size || formatBytes(photo.file_size_bytes || 0) },
+        { label: "Dimensions", value: metadata.image_size || null },
+    ];
+    const captureEntries = [
+        { label: "Lens", value: getMetadataValue(photo, ["lensmodel"]) },
+        {
+            label: "Focal Length",
+            value: formatMetadataValue("focallength", getMetadataValue(photo, ["focallength"]), rawMetadata),
+        },
+        {
+            label: "35mm Equivalent",
+            value: formatMetadataValue(
+                "focallengthin35mmfilm",
+                getMetadataValue(photo, ["focal_length_35mm_equivalent", "focallengthin35mmfilm"]),
+                rawMetadata
+            ),
+        },
+        {
+            label: "Aperture",
+            value: formatMetadataValue("fnumber", getMetadataValue(photo, ["fnumber"]), rawMetadata),
+        },
+        {
+            label: "Exposure",
+            value: formatMetadataValue("exposuretime", getMetadataValue(photo, ["exposuretime"]), rawMetadata),
+        },
+        {
+            label: "ISO",
+            value: formatMetadataValue("isospeedratings", getMetadataValue(photo, ["isospeedratings"]), rawMetadata),
+        },
+        {
+            label: "Flash",
+            value: formatMetadataValue("flash", getMetadataValue(photo, ["flash"]), rawMetadata),
+        },
+        {
+            label: "White Balance",
+            value: formatMetadataValue("whitebalance", getMetadataValue(photo, ["whitebalance"]), rawMetadata),
+        },
+        {
+            label: "Heading",
+            value:
+                metadata.direction_degrees !== undefined
+                    ? `${formatNumber(Number(metadata.direction_degrees), 1)}°${metadata.direction_reference === "T" ? " true" : metadata.direction_reference === "M" ? " magnetic" : ""}`
+                    : formatMetadataValue("gpsimgdirection", getMetadataValue(photo, ["gpsimgdirection", "gpsdestbearing"]), rawMetadata),
+        },
+        {
+            label: "Field of View",
+            value:
+                metadata.horizontal_field_of_view_degrees !== undefined
+                    ? `${formatNumber(Number(metadata.horizontal_field_of_view_degrees), 1)}°`
+                    : "Unknown",
+        },
+        {
+            label: "Altitude",
+            value: formatMetadataValue("gpsaltitude", getMetadataValue(photo, ["gpsaltitude"]), rawMetadata),
+        },
+        {
+            label: "GPS Accuracy",
+            value: formatMetadataValue("gpshpositioningerror", getMetadataValue(photo, ["gpshpositioningerror"]), rawMetadata),
+        },
+        { label: "Software", value: getMetadataValue(photo, ["software"]) },
+    ];
+    const advancedFieldCount = Object.keys(rawMetadata).filter(
+        (key) => !exposedRawKeys.has(key) && !HIDDEN_RAW_METADATA_KEYS.has(key)
+    ).length;
+    activeDrawerPhotoId = photo.id;
+    lastDrawerTrigger = triggerElement || null;
+    metadataDrawerTitle.textContent = photo.original_filename;
+    metadataDrawerBody.innerHTML = `
+        <div class="drawer-preview-shell">
+            <img class="drawer-preview-image" src="${encodeURI(photo.image_url)}" alt="${escapeHtml(photo.original_filename)} preview">
+        </div>
+        <div class="drawer-hero-actions">
+            <a class="drawer-primary-link" href="${encodeURI(photo.image_url)}" target="_blank" rel="noreferrer">Open full image</a>
+            <button class="drawer-secondary-button" type="button" data-drawer-center="${photo.id}">Center on map</button>
+        </div>
+        <section class="metadata-section">
+            <h3>Photo summary</h3>
+            <dl class="metadata-summary-list">
+                ${buildDetailRows(summaryEntries)}
+            </dl>
+        </section>
+        <section class="metadata-section">
+            <h3>Camera and capture</h3>
+            <dl class="metadata-list">
+                ${buildDetailRows(captureEntries)}
+            </dl>
+        </section>
+        <details class="metadata-disclosure" ${advancedFieldCount ? "" : "hidden"}>
+            <summary>Advanced metadata (${advancedFieldCount} fields)</summary>
+            <section class="metadata-section metadata-section-advanced">
+                <h3>Raw extracted metadata</h3>
+                <dl class="metadata-list">
+                    ${buildMetadataRows(photo, exposedRawKeys)}
+                </dl>
+            </section>
+        </details>
+        <section class="metadata-section metadata-section-note">
+            <p class="metadata-note">Values are normalized for readability where possible. Some advanced EXIF fields remain approximate or vendor-specific.</p>
+        </section>
+    `;
+    metadataDrawer.hidden = false;
+    metadataDrawer.setAttribute("aria-hidden", "false");
+    drawerBackdrop.hidden = false;
+    document.body.classList.add("drawer-open");
+    metadataDrawerClose.focus();
+}
+
+function centerPhotoOnMap(photoId) {
+    const photo = findPhotoById(photoId);
+    if (!photo) {
+        setStatus("Photo not found.", "error");
+        return;
+    }
+
+    if (typeof photo.latitude !== "number" || typeof photo.longitude !== "number") {
+        setStatus("This photo does not include GPS coordinates.", "error");
+        return;
+    }
+
+    const marker = markerByPhotoId.get(photo.id);
+    map.flyTo([photo.latitude, photo.longitude], Math.max(map.getZoom(), 15), {
+        animate: true,
+        duration: 0.8,
+    });
+
+    if (marker && typeof marker.openPopup === "function") {
+        window.setTimeout(() => {
+            marker.openPopup();
+        }, 250);
+    }
 }
 
 function getCameraLabel(metadata) {
@@ -603,21 +1413,23 @@ function renderUploads(photos) {
 
     uploadList.innerHTML = photos
         .map((photo) => {
-            const metadata = photo.metadata || {};
-            const location =
-                photo.latitude !== null && photo.longitude !== null
-                    ? `${photo.latitude}, ${photo.longitude}`
-                    : "No GPS data";
-            const camera = getCameraLabel(metadata);
-            const capturedAt = metadata.date_time_original || metadata.create_date || "Unknown";
+            const hasGps = typeof photo.latitude === "number" && typeof photo.longitude === "number";
 
             return `
-                <article class="upload-card">
-                    <div class="upload-card-header">
-                        <h3>${escapeHtml(photo.original_filename)}</h3>
+                <article class="upload-row" data-photo-id="${photo.id}">
+                    <button class="upload-row-preview" type="button" data-action="details" data-photo-id="${photo.id}" aria-label="Show details for ${escapeHtml(photo.original_filename)}">
+                        <img class="upload-row-image" src="${encodeURI(photo.image_url)}" alt="${escapeHtml(photo.original_filename)} preview" loading="lazy">
+                    </button>
+                    <div class="upload-row-actions">
+                        <a class="card-link-button" href="${encodeURI(photo.image_url)}" target="_blank" rel="noreferrer">Open</a>
+                        <button class="card-secondary-button" type="button" data-action="center" data-photo-id="${photo.id}" ${hasGps ? "" : "disabled"}>
+                            Map
+                        </button>
+                        <button class="card-secondary-button" type="button" data-action="details" data-photo-id="${photo.id}">Metadata</button>
                         <button
                             class="delete-photo-button"
                             type="button"
+                            data-action="delete"
                             data-photo-id="${photo.id}"
                             data-photo-name="${escapeHtml(photo.original_filename)}"
                             aria-label="Delete ${escapeHtml(photo.original_filename)}"
@@ -627,14 +1439,6 @@ function renderUploads(photos) {
                                 <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9zm1 12a2 2 0 0 1-2-2V8h12v11a2 2 0 0 1-2 2H8z"></path>
                             </svg>
                         </button>
-                    </div>
-                    <div class="upload-meta">
-                        <span><strong>Checksum:</strong> ${escapeHtml(photo.checksum)}</span>
-                        <span><strong>Type:</strong> ${escapeHtml(metadata.file_type || "Unknown")}</span>
-                        <span><strong>Size:</strong> ${escapeHtml(metadata.file_size || "Unknown")}</span>
-                        <span><strong>Camera:</strong> ${escapeHtml(camera)}</span>
-                        <span><strong>Captured:</strong> ${escapeHtml(capturedAt)}</span>
-                        <span><strong>Location:</strong> ${escapeHtml(location)}</span>
                     </div>
                 </article>
             `;
@@ -674,6 +1478,7 @@ function resetMapOverlays() {
 
     photoMarkers.clearLayers();
     fieldOfViewLayer.clearLayers();
+    markerByPhotoId.clear();
 }
 
 function renderPhotoMarkers(photos) {
@@ -727,6 +1532,7 @@ function renderPhotoMarkers(photos) {
             )
         );
         marker.addTo(photoMarkers);
+        markerByPhotoId.set(photo.id, marker);
     });
 }
 
@@ -973,6 +1779,9 @@ async function deletePhoto(photoId, photoName) {
     }
 
     await loadPhotos();
+    if (activeDrawerPhotoId === Number(photoId)) {
+        closeMetadataDrawer({ restoreFocus: false });
+    }
     setTimedStatus(
         `Deleted ${payload.deleted_filename || photoName}.`,
         "success",
@@ -1009,22 +1818,67 @@ clearUploadsButton.addEventListener("click", async () => {
 });
 
 uploadList.addEventListener("click", async (event) => {
-    const button = event.target.closest(".delete-photo-button");
-    if (!button) {
+    const actionElement = event.target.closest("[data-action]");
+    if (!actionElement) {
         return;
     }
 
-    if (button.disabled) {
+    if (actionElement.disabled) {
         return;
     }
 
-    button.disabled = true;
+    const action = actionElement.dataset.action;
+    const photoId = actionElement.dataset.photoId;
+
+    if (action === "details") {
+        const photo = findPhotoById(photoId);
+        if (!photo) {
+            setStatus("Photo not found.", "error");
+            return;
+        }
+        openMetadataDrawer(photo, actionElement);
+        return;
+    }
+
+    if (action === "center") {
+        centerPhotoOnMap(photoId);
+        return;
+    }
+
+    if (action !== "delete") {
+        return;
+    }
+
+    actionElement.disabled = true;
 
     try {
-        await deletePhoto(button.dataset.photoId, button.dataset.photoName || "this photo");
+        await deletePhoto(photoId, actionElement.dataset.photoName || "this photo");
     } catch (error) {
-        button.disabled = false;
+        actionElement.disabled = false;
         setStatus(getErrorMessage(error, "Unable to delete photo."), "error");
+    }
+});
+
+metadataDrawerClose.addEventListener("click", () => {
+    closeMetadataDrawer();
+});
+
+drawerBackdrop.addEventListener("click", () => {
+    closeMetadataDrawer();
+});
+
+metadataDrawerBody.addEventListener("click", (event) => {
+    const centerButton = event.target.closest("[data-drawer-center]");
+    if (!centerButton) {
+        return;
+    }
+
+    centerPhotoOnMap(centerButton.dataset.drawerCenter);
+});
+
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !metadataDrawer.hidden) {
+        closeMetadataDrawer();
     }
 });
 

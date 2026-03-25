@@ -67,6 +67,24 @@
         <section class="map-panel" aria-label="Map panel">
             <div id="map" class="map" aria-label="Interactive map"></div>
         </section>
+
+        <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+        <aside
+            id="metadata-drawer"
+            class="metadata-drawer"
+            aria-label="Photo details"
+            aria-hidden="true"
+            hidden
+        >
+            <div class="metadata-drawer-header">
+                <div>
+                    <p class="eyebrow metadata-drawer-eyebrow">Photo details</p>
+                    <h2 id="metadata-drawer-title">Select a photo</h2>
+                </div>
+                <button id="metadata-drawer-close" class="drawer-close-button" type="button" aria-label="Close photo details">Close</button>
+            </div>
+            <div id="metadata-drawer-body" class="metadata-drawer-body"></div>
+        </aside>
     </main>
 
     <script
