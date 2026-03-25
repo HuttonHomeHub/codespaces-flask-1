@@ -12,9 +12,36 @@ const uploadList = document.getElementById("upload-list");
 const uploadCount = document.getElementById("upload-count");
 const clearUploadsButton = document.getElementById("clear-uploads-button");
 const photoMarkers = L.layerGroup().addTo(map);
+const fieldOfViewLayer = L.layerGroup().addTo(map);
+const HEATMAP_RADIUS_PX = 36;
+const HEATMAP_BLUR_PX = 28;
+const HEATMAP_MIN_OPACITY = 0.18;
+const HEATMAP_POINT_INTENSITY = 0.8;
+const heatMapLayer =
+    typeof L.heatLayer === "function"
+        ? L.heatLayer([], {
+              radius: HEATMAP_RADIUS_PX,
+              blur: HEATMAP_BLUR_PX,
+              maxZoom: 19,
+              minOpacity: HEATMAP_MIN_OPACITY,
+              max: 1,
+              gradient: {
+                  0.2: "#38bdf8",
+                  0.4: "#22c55e",
+                  0.65: "#f59e0b",
+                  0.85: "#f97316",
+                  1: "#dc2626",
+              },
+          })
+        : null;
 const maxFilesPerUpload = Number(uploadForm.dataset.maxFiles || 100);
 const maxTotalUploadBytes = Number(uploadForm.dataset.maxTotalBytes || 0);
 let pendingFiles = [];
+const DEFAULT_HORIZONTAL_FOV_DEGREES = 55;
+const MIN_HORIZONTAL_FOV_DEGREES = 12;
+const TARGET_FRAME_WIDTH_METERS = 90;
+const MIN_VIEWING_DISTANCE_METERS = 30;
+const MAX_VIEWING_DISTANCE_METERS = 250;
 
 const satelliteLayer = L.tileLayer(
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -35,12 +62,20 @@ const streetLayer = L.tileLayer(
 
 satelliteLayer.addTo(map);
 
+const overlayLayers = {
+    "Field of View": fieldOfViewLayer,
+};
+
+if (heatMapLayer) {
+    overlayLayers["Heat Map"] = heatMapLayer;
+}
+
 L.control.layers(
     {
         Satellite: satelliteLayer,
         Streets: streetLayer,
     },
-    {},
+    overlayLayers,
     {
         collapsed: false,
         position: "topright",
@@ -147,6 +182,255 @@ function formatDate(value) {
     return date.toLocaleString();
 }
 
+function normalizeBearing(degrees) {
+    const normalized = degrees % 360;
+    return normalized < 0 ? normalized + 360 : normalized;
+}
+
+function parseDirectionValue(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return normalizeBearing(value);
+    }
+
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const rationalMatch = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*[,/]\s*(-?\d+(?:\.\d+)?)$/);
+    if (rationalMatch) {
+        const numerator = Number(rationalMatch[1]);
+        const denominator = Number(rationalMatch[2]);
+        if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+            return normalizeBearing(numerator / denominator);
+        }
+    }
+
+    const directValue = Number.parseFloat(trimmed);
+    if (Number.isFinite(directValue)) {
+        return normalizeBearing(directValue);
+    }
+
+    return null;
+}
+
+function parseNumericMetadataValue(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+    }
+
+    if (typeof value !== "string") {
+        return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const rationalMatch = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*[,/]\s*(-?\d+(?:\.\d+)?)$/);
+    if (rationalMatch) {
+        const numerator = Number(rationalMatch[1]);
+        const denominator = Number(rationalMatch[2]);
+        if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) {
+            return numerator / denominator;
+        }
+    }
+
+    const directValue = Number.parseFloat(trimmed);
+    return Number.isFinite(directValue) ? directValue : null;
+}
+
+function clamp(value, minValue, maxValue) {
+    return Math.min(Math.max(value, minValue), maxValue);
+}
+
+function normalizeHorizontalFov(horizontalFovDegrees) {
+    if (!Number.isFinite(horizontalFovDegrees)) {
+        return null;
+    }
+
+    // Horizontal FOV must be between 0 and 180 degrees; values outside that are invalid.
+    return clamp(horizontalFovDegrees, MIN_HORIZONTAL_FOV_DEGREES, 179.9);
+}
+
+function getPhotoDirection(metadata) {
+    return parseDirectionValue(
+        metadata.gps_img_direction ??
+            metadata.direction_degrees ??
+            metadata.gpsimgdirection ??
+            metadata.gps_dest_bearing ??
+            metadata.gpsdestbearing ??
+            metadata.direction
+    );
+}
+
+function getDirectionReferenceLabel(metadata) {
+    const reference = String(
+        metadata.direction_reference ??
+            metadata.gps_img_direction_ref ??
+            metadata.gpsimgdirectionref ??
+            metadata.gps_dest_bearing_ref ??
+            metadata.gpsdestbearingref ??
+            ""
+    )
+        .trim()
+        .toUpperCase();
+
+    if (reference === "T") {
+        return "True north";
+    }
+
+    if (reference === "M") {
+        return "Magnetic north";
+    }
+
+    return null;
+}
+
+function getPhotoDimensions(metadata) {
+    const width = parseNumericMetadataValue(metadata.image_width ?? metadata.imagewidth);
+    const height = parseNumericMetadataValue(metadata.image_height ?? metadata.imageheight);
+
+    if (!width || !height || width <= 0 || height <= 0) {
+        return null;
+    }
+
+    return { width, height };
+}
+
+function calculateHorizontalFovFrom35mmEquivalent(focalLength35mm, dimensions) {
+    if (!Number.isFinite(focalLength35mm) || focalLength35mm <= 0) {
+        return null;
+    }
+
+    let equivalentSensorWidth = 36;
+    if (dimensions) {
+        const aspectRatio = dimensions.width / dimensions.height;
+        const fullFrameDiagonal = Math.hypot(36, 24);
+        equivalentSensorWidth =
+            (fullFrameDiagonal * aspectRatio) / Math.sqrt(aspectRatio * aspectRatio + 1);
+    }
+
+    const fovRadians = 2 * Math.atan(equivalentSensorWidth / (2 * focalLength35mm));
+    return (fovRadians * 180) / Math.PI;
+}
+
+function getPhotoHorizontalFov(metadata) {
+    const normalizedFov = parseNumericMetadataValue(metadata.horizontal_field_of_view_degrees);
+    if (normalizedFov !== null) {
+        return normalizeHorizontalFov(normalizedFov) ?? DEFAULT_HORIZONTAL_FOV_DEGREES;
+    }
+
+    const focalLength35mm = parseNumericMetadataValue(
+        metadata.focal_length_35mm_equivalent ??
+            metadata.focal_length_in_35mm_film ??
+            metadata.focallengthin35mmfilm
+    );
+
+    const calculatedFov = calculateHorizontalFovFrom35mmEquivalent(
+        focalLength35mm,
+        getPhotoDimensions(metadata)
+    );
+
+    if (calculatedFov === null) {
+        return DEFAULT_HORIZONTAL_FOV_DEGREES;
+    }
+
+    return normalizeHorizontalFov(calculatedFov) ?? DEFAULT_HORIZONTAL_FOV_DEGREES;
+}
+
+function getViewingDistanceMeters(horizontalFovDegrees) {
+    const halfAngleRadians = (horizontalFovDegrees * Math.PI) / 360;
+    if (!Number.isFinite(halfAngleRadians) || halfAngleRadians <= 0) {
+        return 60;
+    }
+
+    const distance = TARGET_FRAME_WIDTH_METERS / (2 * Math.tan(halfAngleRadians));
+    return clamp(distance, MIN_VIEWING_DISTANCE_METERS, MAX_VIEWING_DISTANCE_METERS);
+}
+
+function destinationPoint(latitude, longitude, bearingDegrees, distanceMeters) {
+    const earthRadiusMeters = 6371000;
+    const angularDistance = distanceMeters / earthRadiusMeters;
+    const bearingRadians = (bearingDegrees * Math.PI) / 180;
+    const latitudeRadians = (latitude * Math.PI) / 180;
+    const longitudeRadians = (longitude * Math.PI) / 180;
+
+    const destinationLatitude = Math.asin(
+        Math.sin(latitudeRadians) * Math.cos(angularDistance) +
+            Math.cos(latitudeRadians) * Math.sin(angularDistance) * Math.cos(bearingRadians)
+    );
+
+    const destinationLongitude =
+        longitudeRadians +
+        Math.atan2(
+            Math.sin(bearingRadians) * Math.sin(angularDistance) * Math.cos(latitudeRadians),
+            Math.cos(angularDistance) -
+                Math.sin(latitudeRadians) * Math.sin(destinationLatitude)
+        );
+
+    return [
+        (destinationLatitude * 180) / Math.PI,
+        (destinationLongitude * 180) / Math.PI,
+    ];
+}
+
+function buildViewingCone(latitude, longitude, bearingDegrees, horizontalFovDegrees, distanceMeters) {
+    const points = [[latitude, longitude]];
+    const clampedFov = normalizeHorizontalFov(horizontalFovDegrees) ?? DEFAULT_HORIZONTAL_FOV_DEGREES;
+    const startBearing = bearingDegrees - clampedFov / 2;
+    const steps = 8;
+
+    for (let step = 0; step <= steps; step += 1) {
+        const currentBearing =
+            startBearing + (clampedFov * step) / steps;
+        points.push(
+            destinationPoint(
+                latitude,
+                longitude,
+                normalizeBearing(currentBearing),
+                distanceMeters
+            )
+        );
+    }
+
+    points.push([latitude, longitude]);
+    return points;
+}
+
+function createPhotoMarker(photo, directionDegrees) {
+    const hasDirection = typeof directionDegrees === "number";
+
+    if (!hasDirection) {
+        return L.circleMarker([photo.latitude, photo.longitude], {
+            radius: 7,
+            color: "#134e4a",
+            weight: 2,
+            fillColor: "#f8fafc",
+            fillOpacity: 0.95,
+        });
+    }
+
+    return L.marker([photo.latitude, photo.longitude], {
+        icon: L.divIcon({
+            className: "photo-direction-marker-wrapper",
+            html: `
+                <span class="photo-direction-marker" style="--marker-rotation:${directionDegrees}deg;">
+                    <span class="photo-direction-marker__arrow"></span>
+                </span>
+            `,
+            iconSize: [26, 26],
+            iconAnchor: [13, 13],
+            popupAnchor: [0, -12],
+        }),
+    });
+}
+
 function renderUploads(photos) {
     uploadCount.textContent = `${photos.length} file${photos.length === 1 ? "" : "s"}`;
 
@@ -196,18 +480,57 @@ function renderUploads(photos) {
 
 function renderPhotoMarkers(photos) {
     photoMarkers.clearLayers();
+    fieldOfViewLayer.clearLayers();
 
     const gpsPhotos = photos.filter(
         (photo) => typeof photo.latitude === "number" && typeof photo.longitude === "number"
     );
 
+    if (heatMapLayer) {
+        heatMapLayer.setLatLngs(
+            gpsPhotos.map((photo) => [photo.latitude, photo.longitude, HEATMAP_POINT_INTENSITY])
+        );
+    }
+
     gpsPhotos.forEach((photo) => {
         const metadata = photo.metadata || {};
-        const marker = L.marker([photo.latitude, photo.longitude]);
+        const directionDegrees = getPhotoDirection(metadata);
+        const directionReferenceLabel = getDirectionReferenceLabel(metadata);
+        const horizontalFovDegrees = getPhotoHorizontalFov(metadata);
+        const viewingDistanceMeters = getViewingDistanceMeters(horizontalFovDegrees);
+        const marker = createPhotoMarker(photo, directionDegrees);
+
+        if (typeof directionDegrees === "number") {
+            L.polygon(
+                buildViewingCone(
+                    photo.latitude,
+                    photo.longitude,
+                    directionDegrees,
+                    horizontalFovDegrees,
+                    viewingDistanceMeters
+                ),
+                {
+                color: "#f97316",
+                weight: 1,
+                opacity: 0.9,
+                fillColor: "#fb923c",
+                fillOpacity: 0.2,
+                interactive: false,
+                }
+            ).addTo(fieldOfViewLayer);
+        }
+
         marker.bindPopup(`
             <strong>${escapeHtml(photo.original_filename)}</strong><br>
             ${escapeHtml(metadata.make || "Unknown")} ${escapeHtml(metadata.model || "")}<br>
             ${escapeHtml(metadata.date_time_original || metadata.create_date || formatDate(photo.uploaded_at))}<br>
+            Heading: ${escapeHtml(
+                typeof directionDegrees === "number"
+                    ? `${Math.round(directionDegrees)}°`
+                    : "No direction data"
+            )}<br>
+            Direction reference: ${escapeHtml(directionReferenceLabel || "Unknown")}<br>
+            Horizontal view: ${escapeHtml(`${Math.round(horizontalFovDegrees)}°`)}<br>
             <a href="${encodeURI(photo.image_url)}" target="_blank" rel="noreferrer">Open image</a>
         `);
         marker.addTo(photoMarkers);

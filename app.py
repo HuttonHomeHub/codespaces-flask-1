@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import mimetypes
 import sqlite3
 import uuid
@@ -120,8 +121,117 @@ def convert_ratio(value):
     return value
 
 
+def parse_numeric_value(value):
+    converted = convert_ratio(value)
+    if isinstance(converted, (int, float)):
+        return float(converted)
+    if isinstance(converted, str):
+        trimmed = converted.strip()
+        if not trimmed:
+            return None
+        if "," in trimmed or "/" in trimmed:
+            parts = [part.strip() for part in trimmed.replace("/", ",").split(",")]
+            if len(parts) == 2:
+                try:
+                    numerator = float(parts[0])
+                    denominator = float(parts[1])
+                except ValueError:
+                    return None
+                if denominator == 0:
+                    return None
+                return numerator / denominator
+        try:
+            return float(trimmed)
+        except ValueError:
+            return None
+    return None
+
+
+def decode_metadata_text(value):
+    if isinstance(value, bytes):
+        decoded = value.decode("utf-8", errors="ignore").replace("\x00", "").strip()
+        return decoded or None
+    if isinstance(value, str):
+        normalized = value.replace("\x00", "").strip()
+        return normalized or None
+    return None
+
+
+def decode_exif_bytes(value):
+    decoded = decode_metadata_text(value)
+    if not decoded:
+        return None
+
+    if any(ord(character) < 32 and character not in {"\t", "\n", "\r"} for character in decoded):
+        return None
+
+    if not any(character.isalnum() for character in decoded):
+        return None
+
+    return decoded
+
+
+def calculate_horizontal_fov_degrees(focal_length_35mm, image_width, image_height):
+    if focal_length_35mm is None or focal_length_35mm <= 0:
+        return None
+
+    if image_width and image_height and image_width > 0 and image_height > 0:
+        aspect_ratio = image_width / image_height
+        full_frame_diagonal = math.hypot(36.0, 24.0)
+        equivalent_sensor_width = (
+            full_frame_diagonal * aspect_ratio / math.sqrt(aspect_ratio * aspect_ratio + 1)
+        )
+    else:
+        equivalent_sensor_width = 36.0
+
+    fov_radians = 2 * math.atan(equivalent_sensor_width / (2 * focal_length_35mm))
+    return round(math.degrees(fov_radians), 2)
+
+
+def add_derived_camera_metadata(metadata):
+    direction_degrees = parse_numeric_value(
+        metadata.get("direction_degrees")
+        or metadata.get("gps_img_direction")
+        or metadata.get("gpsimgdirection")
+        or metadata.get("gps_dest_bearing")
+        or metadata.get("gpsdestbearing")
+    )
+    if direction_degrees is not None:
+        metadata["direction_degrees"] = round(direction_degrees % 360, 2)
+
+    direction_reference = decode_metadata_text(
+        metadata.get("direction_reference")
+        or metadata.get("gps_img_direction_ref")
+        or metadata.get("gpsimgdirectionref")
+        or metadata.get("gps_dest_bearing_ref")
+        or metadata.get("gpsdestbearingref")
+    )
+    if direction_reference:
+        metadata["direction_reference"] = direction_reference.upper()
+
+    focal_length_35mm = parse_numeric_value(
+        metadata.get("focal_length_35mm_equivalent")
+        or metadata.get("focal_length_in_35mm_film")
+        or metadata.get("focallengthin35mmfilm")
+    )
+    image_width = parse_numeric_value(metadata.get("image_width") or metadata.get("imagewidth"))
+    image_height = parse_numeric_value(metadata.get("image_height") or metadata.get("imageheight"))
+
+    horizontal_fov_degrees = calculate_horizontal_fov_degrees(
+        focal_length_35mm,
+        image_width,
+        image_height,
+    )
+    if horizontal_fov_degrees is not None:
+        metadata["horizontal_field_of_view_degrees"] = horizontal_fov_degrees
+        metadata["focal_length_35mm_equivalent"] = round(focal_length_35mm, 2)
+
+
 def serialize_metadata_value(value):
     if isinstance(value, bytes):
+        decoded_bytes = decode_exif_bytes(value)
+        if decoded_bytes is not None:
+            return decoded_bytes
         return f"(Binary data {len(value)} bytes)"
     if isinstance(value, tuple):
         serialized_items = [serialize_metadata_value(item) for item in value]
@@ -179,6 +289,24 @@ def extract_exif_metadata_with_pillow(image_path):
                     gps_info.get("gps_longitude"),
                     gps_info.get("gps_longitude_ref"),
                 )
+
+                direction_value = parse_numeric_value(
+                    gps_info.get("gps_img_direction")
+                    or gps_info.get("gpsimgdirection")
+                    or gps_info.get("gps_dest_bearing")
+                    or gps_info.get("gpsdestbearing")
+                )
+                if direction_value is not None:
+                    metadata["direction_degrees"] = round(direction_value % 360, 2)
+
+                direction_reference = decode_metadata_text(
+                    gps_info.get("gps_img_direction_ref")
+                    or gps_info.get("gpsimgdirectionref")
+                    or gps_info.get("gps_dest_bearing_ref")
+                    or gps_info.get("gpsdestbearingref")
+                )
+                if direction_reference:
+                    metadata["direction_reference"] = direction_reference.upper()
             else:
                 metadata[tag_name] = serialize_metadata_value(raw_value)
 
@@ -220,6 +348,10 @@ def extract_exif_metadata(image_path):
     gps_latitude_ref = gps_ifd.get(piexif.GPSIFD.GPSLatitudeRef)
     gps_longitude = gps_ifd.get(piexif.GPSIFD.GPSLongitude)
     gps_longitude_ref = gps_ifd.get(piexif.GPSIFD.GPSLongitudeRef)
+    gps_img_direction = gps_ifd.get(piexif.GPSIFD.GPSImgDirection)
+    gps_img_direction_ref = gps_ifd.get(piexif.GPSIFD.GPSImgDirectionRef)
+    gps_dest_bearing = gps_ifd.get(piexif.GPSIFD.GPSDestBearing)
+    gps_dest_bearing_ref = gps_ifd.get(piexif.GPSIFD.GPSDestBearingRef)
 
     if isinstance(gps_latitude_ref, bytes):
         gps_latitude_ref = gps_latitude_ref.decode("utf-8", errors="ignore")
@@ -233,6 +365,18 @@ def extract_exif_metadata(image_path):
         metadata["gps_latitude_decimal"] = latitude
     if longitude is not None:
         metadata["gps_longitude_decimal"] = longitude
+
+    direction_value = parse_numeric_value(gps_img_direction)
+    if direction_value is None:
+        direction_value = parse_numeric_value(gps_dest_bearing)
+    if direction_value is not None:
+        metadata["direction_degrees"] = round(direction_value % 360, 2)
+
+    direction_reference = decode_metadata_text(gps_img_direction_ref)
+    if not direction_reference:
+        direction_reference = decode_metadata_text(gps_dest_bearing_ref)
+    if direction_reference:
+        metadata["direction_reference"] = direction_reference.upper()
 
     return metadata, latitude, longitude
 
@@ -277,6 +421,7 @@ def extract_image_metadata(image_path, original_filename):
 
     exif_metadata, latitude, longitude = extract_exif_metadata(image_path)
     metadata.update(exif_metadata)
+    add_derived_camera_metadata(metadata)
 
     return metadata, checksum, file_size_bytes, mime_type, latitude, longitude
 
