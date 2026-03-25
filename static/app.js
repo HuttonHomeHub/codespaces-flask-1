@@ -87,6 +87,18 @@ L.control.scale({
     metric: true,
 }).addTo(map);
 
+function getErrorMessage(error, fallbackMessage) {
+    if (error instanceof Error && error.message) {
+        return error.message;
+    }
+
+    return fallbackMessage;
+}
+
+function formatCountLabel(count, singularLabel) {
+    return `${count} ${singularLabel}${count === 1 ? "" : "s"}`;
+}
+
 function setStatus(message, tone = "") {
     uploadStatus.textContent = message;
     uploadStatus.className = tone ? `status-message is-${tone}` : "status-message";
@@ -180,6 +192,14 @@ function formatDate(value) {
     }
 
     return date.toLocaleString();
+}
+
+function getCameraLabel(metadata) {
+    return [metadata.make, metadata.model].filter(Boolean).join(" ") || "Unknown";
+}
+
+function getCapturedLabel(photo) {
+    return photo.metadata?.date_time_original || photo.metadata?.create_date || formatDate(photo.uploaded_at);
 }
 
 function normalizeBearing(degrees) {
@@ -432,7 +452,8 @@ function createPhotoMarker(photo, directionDegrees) {
 }
 
 function renderUploads(photos) {
-    uploadCount.textContent = `${photos.length} file${photos.length === 1 ? "" : "s"}`;
+    uploadCount.textContent = formatCountLabel(photos.length, "file");
+    clearUploadsButton.disabled = photos.length === 0;
 
     if (!photos.length) {
         uploadList.innerHTML = '<p class="empty-state">No photos uploaded yet.</p>';
@@ -446,6 +467,8 @@ function renderUploads(photos) {
                 photo.latitude !== null && photo.longitude !== null
                     ? `${photo.latitude}, ${photo.longitude}`
                     : "No GPS data";
+            const camera = getCameraLabel(metadata);
+            const capturedAt = metadata.date_time_original || metadata.create_date || "Unknown";
 
             return `
                 <article class="upload-card">
@@ -468,14 +491,30 @@ function renderUploads(photos) {
                         <span><strong>Checksum:</strong> ${escapeHtml(photo.checksum)}</span>
                         <span><strong>Type:</strong> ${escapeHtml(metadata.file_type || "Unknown")}</span>
                         <span><strong>Size:</strong> ${escapeHtml(metadata.file_size || "Unknown")}</span>
-                        <span><strong>Camera:</strong> ${escapeHtml(metadata.make || "Unknown")} ${escapeHtml(metadata.model || "")}</span>
-                        <span><strong>Captured:</strong> ${escapeHtml(metadata.date_time_original || metadata.create_date || "Unknown")}</span>
+                        <span><strong>Camera:</strong> ${escapeHtml(camera)}</span>
+                        <span><strong>Captured:</strong> ${escapeHtml(capturedAt)}</span>
                         <span><strong>Location:</strong> ${escapeHtml(location)}</span>
                     </div>
                 </article>
             `;
         })
         .join("");
+}
+
+function buildPhotoPopupMarkup(photo, metadata, directionDegrees, directionReferenceLabel, horizontalFovDegrees) {
+    return `
+        <strong>${escapeHtml(photo.original_filename)}</strong><br>
+        ${escapeHtml(getCameraLabel(metadata))}<br>
+        ${escapeHtml(getCapturedLabel(photo))}<br>
+        Heading: ${escapeHtml(
+            typeof directionDegrees === "number"
+                ? `${Math.round(directionDegrees)}°`
+                : "No direction data"
+        )}<br>
+        Direction reference: ${escapeHtml(directionReferenceLabel || "Unknown")}<br>
+        Horizontal view: ${escapeHtml(`${Math.round(horizontalFovDegrees)}°`)}<br>
+        <a href="${encodeURI(photo.image_url)}" target="_blank" rel="noreferrer">Open image</a>
+    `;
 }
 
 function renderPhotoMarkers(photos) {
@@ -510,29 +549,25 @@ function renderPhotoMarkers(photos) {
                     viewingDistanceMeters
                 ),
                 {
-                color: "#f97316",
-                weight: 1,
-                opacity: 0.9,
-                fillColor: "#fb923c",
-                fillOpacity: 0.2,
-                interactive: false,
+                    color: "#f97316",
+                    weight: 1,
+                    opacity: 0.9,
+                    fillColor: "#fb923c",
+                    fillOpacity: 0.2,
+                    interactive: false,
                 }
             ).addTo(fieldOfViewLayer);
         }
 
-        marker.bindPopup(`
-            <strong>${escapeHtml(photo.original_filename)}</strong><br>
-            ${escapeHtml(metadata.make || "Unknown")} ${escapeHtml(metadata.model || "")}<br>
-            ${escapeHtml(metadata.date_time_original || metadata.create_date || formatDate(photo.uploaded_at))}<br>
-            Heading: ${escapeHtml(
-                typeof directionDegrees === "number"
-                    ? `${Math.round(directionDegrees)}°`
-                    : "No direction data"
-            )}<br>
-            Direction reference: ${escapeHtml(directionReferenceLabel || "Unknown")}<br>
-            Horizontal view: ${escapeHtml(`${Math.round(horizontalFovDegrees)}°`)}<br>
-            <a href="${encodeURI(photo.image_url)}" target="_blank" rel="noreferrer">Open image</a>
-        `);
+        marker.bindPopup(
+            buildPhotoPopupMarkup(
+                photo,
+                metadata,
+                directionDegrees,
+                directionReferenceLabel,
+                horizontalFovDegrees
+            )
+        );
         marker.addTo(photoMarkers);
     });
 }
@@ -582,11 +617,11 @@ async function uploadSelectedFiles() {
     const errors = payload.errors || [];
     if (errors.length) {
         setStatus(
-            `Uploaded ${uploadedCount} file${uploadedCount === 1 ? "" : "s"}. ${errors.length} failed.`,
+            `Uploaded ${formatCountLabel(uploadedCount, "file")}. ${errors.length} failed.`,
             uploadedCount ? "success" : "error"
         );
     } else {
-        setStatus(`Uploaded ${uploadedCount} file${uploadedCount === 1 ? "" : "s"}.`, "success");
+        setStatus(`Uploaded ${formatCountLabel(uploadedCount, "file")}.`, "success");
     }
 
     pendingFiles = [];
@@ -617,7 +652,7 @@ async function clearUploads() {
     photoInput.value = "";
     await loadPhotos();
     setStatus(
-        `Cleared ${payload.deleted_records || 0} record${payload.deleted_records === 1 ? "" : "s"} and ${payload.deleted_files || 0} file${payload.deleted_files === 1 ? "" : "s"}.`,
+        `Cleared ${formatCountLabel(payload.deleted_records || 0, "record")} and ${formatCountLabel(payload.deleted_files || 0, "file")}.`,
         "success"
     );
 }
@@ -650,7 +685,7 @@ uploadForm.addEventListener("submit", async (event) => {
     try {
         await uploadSelectedFiles();
     } catch (error) {
-        setStatus(error.message, "error");
+        setStatus(getErrorMessage(error, "Upload failed."), "error");
     }
 });
 
@@ -658,7 +693,7 @@ clearUploadsButton.addEventListener("click", async () => {
     try {
         await clearUploads();
     } catch (error) {
-        setStatus(error.message, "error");
+        setStatus(getErrorMessage(error, "Unable to clear uploaded photos."), "error");
     }
 });
 
@@ -678,7 +713,7 @@ uploadList.addEventListener("click", async (event) => {
         await deletePhoto(button.dataset.photoId, button.dataset.photoName || "this photo");
     } catch (error) {
         button.disabled = false;
-        setStatus(error.message, "error");
+        setStatus(getErrorMessage(error, "Unable to delete photo."), "error");
     }
 });
 
@@ -709,7 +744,7 @@ dropZone.addEventListener("drop", (event) => {
     }
 
     pendingFiles = nextFiles;
-    setStatus(`${files.length} file${files.length === 1 ? "" : "s"} ready to upload.`);
+    setStatus(`${formatCountLabel(files.length, "file")} ready to upload.`);
 });
 
 photoInput.addEventListener("change", () => {
@@ -728,7 +763,7 @@ photoInput.addEventListener("change", () => {
     }
 
     pendingFiles = nextFiles;
-    setStatus(`${files.length} file${files.length === 1 ? "" : "s"} ready to upload.`);
+    setStatus(`${formatCountLabel(files.length, "file")} ready to upload.`);
 });
 
 loadPhotos().catch(() => {

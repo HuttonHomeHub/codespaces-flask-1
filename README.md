@@ -25,6 +25,12 @@ flask --debug run
 
 Open the root route in your browser after the server starts.
 
+## Verify
+
+```bash
+.venv/bin/python -m unittest discover -s tests
+```
+
 ## Uploads
 
 - Supported image types: JPG, JPEG, PNG, TIFF, WEBP
@@ -34,3 +40,8 @@ Open the root route in your browser after the server starts.
 - Maximum upload size is 512 MB total per request
 - The browser warns the user before upload when either limit is exceeded
 - Individual photos can be deleted from the panel, which removes both the file and its database record
+- Clear All Uploads removes tracked uploaded photos and their database records
+
+## Notes
+
+- Storage paths are configured in the Flask app config, which keeps the app easier to test without touching the default uploads directory or database.

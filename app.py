@@ -21,7 +21,19 @@ MAX_UPLOAD_TOTAL_BYTES = 512 * 1024 * 1024
 
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_TOTAL_BYTES
+app.config.update(
+    MAX_CONTENT_LENGTH=MAX_UPLOAD_TOTAL_BYTES,
+    DATABASE_PATH=DATABASE_PATH,
+    UPLOAD_DIR=UPLOAD_DIR,
+)
+
+
+def get_database_path():
+    return Path(app.config["DATABASE_PATH"])
+
+
+def get_upload_dir():
+    return Path(app.config["UPLOAD_DIR"])
 
 
 def load_image_dependencies():
@@ -41,13 +53,13 @@ def load_image_dependencies():
 
 
 def get_db_connection():
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(get_database_path())
     connection.row_factory = sqlite3.Row
     return connection
 
 
 def init_storage():
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    get_upload_dir().mkdir(parents=True, exist_ok=True)
     with get_db_connection() as connection:
         connection.execute(
             """
@@ -453,12 +465,19 @@ def api_error_response(message, status_code):
 
 def clear_uploaded_photos():
     with get_db_connection() as connection:
-        deleted_count = connection.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
+        rows = connection.execute(
+            "SELECT stored_filename FROM photos"
+        ).fetchall()
+
+    deleted_count = len(rows)
+    upload_dir = get_upload_dir()
+    stored_filenames = [row["stored_filename"] for row in rows]
 
     failed_deletions = []
     deleted_file_count = 0
-    for file_path in UPLOAD_DIR.iterdir():
-        if not file_path.is_file():
+    for stored_filename in stored_filenames:
+        file_path = upload_dir / stored_filename
+        if not file_path.exists():
             continue
         try:
             file_path.unlink(missing_ok=True)
@@ -491,19 +510,163 @@ def delete_uploaded_photo(photo_id):
         if row is None:
             return None
 
-        connection.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
-
     file_deleted = False
-    file_path = UPLOAD_DIR / row["stored_filename"]
+    file_path = get_upload_dir() / row["stored_filename"]
     if file_path.exists():
         file_path.unlink(missing_ok=True)
         file_deleted = True
+
+    with get_db_connection() as connection:
+        connection.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
 
     return {
         "deleted_id": row["id"],
         "deleted_filename": row["original_filename"],
         "deleted_file": file_deleted,
     }
+
+
+def build_upload_error(original_filename, message):
+    return {"file": original_filename, "error": message}
+
+
+def validate_upload_request(files):
+    if not files:
+        return build_upload_error("", "No files were uploaded.")
+    if len(files) > MAX_FILES_PER_UPLOAD:
+        return build_upload_error(
+            "",
+            f"Too many files selected. Maximum is {MAX_FILES_PER_UPLOAD} photos per upload.",
+        )
+    return None
+
+
+def save_incoming_file(file_storage):
+    original_filename = file_storage.filename or ""
+    if not original_filename:
+        return None, build_upload_error(original_filename, "Missing file name.")
+    if not allowed_file(original_filename):
+        return None, build_upload_error(original_filename, "Unsupported image type.")
+
+    safe_name = secure_filename(original_filename)
+    file_extension = Path(safe_name).suffix.lower()
+    stored_filename = f"{uuid.uuid4().hex}{file_extension}"
+    saved_path = get_upload_dir() / stored_filename
+    file_storage.save(saved_path)
+    return (original_filename, stored_filename, saved_path), None
+
+
+def persist_uploaded_photo(
+    original_filename,
+    stored_filename,
+    checksum,
+    file_size_bytes,
+    mime_type,
+    metadata,
+    latitude,
+    longitude,
+):
+    uploaded_at = datetime.now(timezone.utc).isoformat()
+
+    with get_db_connection() as connection:
+        existing_photo = connection.execute(
+            """
+            SELECT original_filename, uploaded_at
+            FROM photos
+            WHERE checksum = ?
+            LIMIT 1
+            """,
+            (checksum,),
+        ).fetchone()
+
+        if existing_photo is not None:
+            return None, build_upload_error(
+                original_filename,
+                "Duplicate photo already imported "
+                f"as {existing_photo['original_filename']} on {existing_photo['uploaded_at']}.",
+            )
+
+        connection.execute(
+            """
+            INSERT INTO photos (
+                original_filename,
+                stored_filename,
+                checksum,
+                file_size_bytes,
+                file_type,
+                file_type_extension,
+                mime_type,
+                metadata_json,
+                latitude,
+                longitude,
+                uploaded_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                original_filename,
+                stored_filename,
+                checksum,
+                file_size_bytes,
+                metadata.get("file_type"),
+                metadata.get("file_type_extension"),
+                mime_type,
+                json.dumps(metadata, ensure_ascii=True, sort_keys=True),
+                latitude,
+                longitude,
+                uploaded_at,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT id, original_filename, stored_filename, checksum, file_size_bytes,
+                   mime_type, latitude, longitude, uploaded_at, metadata_json
+            FROM photos
+            WHERE stored_filename = ?
+            """,
+            (stored_filename,),
+        ).fetchone()
+
+    return serialize_photo(row), None
+
+
+def process_upload(file_storage):
+    saved_file, upload_error = save_incoming_file(file_storage)
+    if upload_error is not None:
+        return None, upload_error
+
+    original_filename, stored_filename, saved_path = saved_file
+
+    try:
+        metadata, checksum, file_size_bytes, mime_type, latitude, longitude = extract_image_metadata(
+            saved_path,
+            original_filename,
+        )
+        uploaded_photo, upload_error = persist_uploaded_photo(
+            original_filename,
+            stored_filename,
+            checksum,
+            file_size_bytes,
+            mime_type,
+            metadata,
+            latitude,
+            longitude,
+        )
+        if upload_error is not None:
+            saved_path.unlink(missing_ok=True)
+            return None, upload_error
+        return uploaded_photo, None
+    except RuntimeError as error:
+        saved_path.unlink(missing_ok=True)
+        return None, build_upload_error(original_filename, str(error))
+    except ValueError as error:
+        saved_path.unlink(missing_ok=True)
+        return None, build_upload_error(original_filename, str(error))
+    except Exception:
+        saved_path.unlink(missing_ok=True)
+        return None, build_upload_error(
+            original_filename,
+            "Unable to extract metadata from this image.",
+        )
 
 
 @app.route("/")
@@ -581,122 +744,20 @@ def delete_photo(photo_id):
 def upload_photos():
     try:
         files = request.files.getlist("photos")
-        if not files:
-            return jsonify({"error": "No files were uploaded."}), 400
-        if len(files) > MAX_FILES_PER_UPLOAD:
-            return api_error_response(
-                f"Too many files selected. Maximum is {MAX_FILES_PER_UPLOAD} photos per upload.",
-                400,
-            )
+        validation_error = validate_upload_request(files)
+        if validation_error is not None:
+            return api_error_response(validation_error["error"], 400)
 
         uploaded = []
         errors = []
 
         for file_storage in files:
-            original_filename = file_storage.filename or ""
-            if not original_filename:
-                errors.append({"file": original_filename, "error": "Missing file name."})
-                continue
-            if not allowed_file(original_filename):
-                errors.append({"file": original_filename, "error": "Unsupported image type."})
+            uploaded_photo, upload_error = process_upload(file_storage)
+            if upload_error is not None:
+                errors.append(upload_error)
                 continue
 
-            safe_name = secure_filename(original_filename)
-            file_extension = Path(safe_name).suffix.lower()
-            stored_filename = f"{uuid.uuid4().hex}{file_extension}"
-            saved_path = UPLOAD_DIR / stored_filename
-            file_storage.save(saved_path)
-
-            try:
-                metadata, checksum, file_size_bytes, mime_type, latitude, longitude = extract_image_metadata(
-                    saved_path,
-                    original_filename,
-                )
-            except RuntimeError as error:
-                saved_path.unlink(missing_ok=True)
-                errors.append({"file": original_filename, "error": str(error)})
-                continue
-            except ValueError as error:
-                saved_path.unlink(missing_ok=True)
-                errors.append({"file": original_filename, "error": str(error)})
-                continue
-            except Exception:
-                saved_path.unlink(missing_ok=True)
-                errors.append({"file": original_filename, "error": "Unable to extract metadata from this image."})
-                continue
-
-            uploaded_at = datetime.now(timezone.utc).isoformat()
-
-            try:
-                with get_db_connection() as connection:
-                    existing_photo = connection.execute(
-                        """
-                        SELECT original_filename, uploaded_at
-                        FROM photos
-                        WHERE checksum = ?
-                        LIMIT 1
-                        """,
-                        (checksum,),
-                    ).fetchone()
-
-                    if existing_photo is not None:
-                        saved_path.unlink(missing_ok=True)
-                        errors.append(
-                            {
-                                "file": original_filename,
-                                "error": (
-                                    "Duplicate photo already imported "
-                                    f"as {existing_photo['original_filename']} on {existing_photo['uploaded_at']}."
-                                ),
-                            }
-                        )
-                        continue
-
-                    connection.execute(
-                        """
-                        INSERT INTO photos (
-                            original_filename,
-                            stored_filename,
-                            checksum,
-                            file_size_bytes,
-                            file_type,
-                            file_type_extension,
-                            mime_type,
-                            metadata_json,
-                            latitude,
-                            longitude,
-                            uploaded_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            original_filename,
-                            stored_filename,
-                            checksum,
-                            file_size_bytes,
-                            metadata.get("file_type"),
-                            metadata.get("file_type_extension"),
-                            mime_type,
-                            json.dumps(metadata, ensure_ascii=True, sort_keys=True),
-                            latitude,
-                            longitude,
-                            uploaded_at,
-                        ),
-                    )
-                    row = connection.execute(
-                        """
-                        SELECT id, original_filename, stored_filename, checksum, file_size_bytes,
-                               mime_type, latitude, longitude, uploaded_at, metadata_json
-                        FROM photos
-                        WHERE stored_filename = ?
-                        """,
-                        (stored_filename,),
-                    ).fetchone()
-            except Exception:
-                saved_path.unlink(missing_ok=True)
-                errors.append({"file": original_filename, "error": "Server error while storing image metadata."})
-                continue
-
-            uploaded.append(serialize_photo(row))
+            uploaded.append(uploaded_photo)
 
         status_code = 200 if uploaded else 400
         return jsonify({"uploaded": uploaded, "errors": errors}), status_code
@@ -707,7 +768,7 @@ def upload_photos():
 
 @app.get("/uploads/<path:filename>")
 def serve_uploaded_file(filename):
-    return send_from_directory(UPLOAD_DIR, filename)
+    return send_from_directory(get_upload_dir(), filename)
 
 
 init_storage()
