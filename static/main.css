@@ -116,6 +116,12 @@ body {
     transform: translateY(-1px);
 }
 
+.drop-zone.is-disabled {
+    opacity: 0.7;
+    cursor: wait;
+    transform: none;
+}
+
 .drop-zone input {
     position: absolute;
     inset: 0;
@@ -156,6 +162,32 @@ body {
     filter: brightness(1.03);
 }
 
+.upload-actions {
+    min-height: 0;
+}
+
+.cancel-upload-button {
+    appearance: none;
+    width: 100%;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font: inherit;
+    font-weight: 700;
+    color: #0f172a;
+    background: rgba(255, 255, 255, 0.94);
+    cursor: pointer;
+}
+
+.cancel-upload-button:hover {
+    background: rgba(241, 245, 249, 0.98);
+}
+
+.cancel-upload-button:disabled {
+    opacity: 0.55;
+    cursor: wait;
+}
+
 .clear-button {
     appearance: none;
     border: 1px solid rgba(185, 28, 28, 0.18);
@@ -185,6 +217,59 @@ body {
 
 .status-message.is-success {
     color: #166534;
+}
+
+.upload-progress {
+    display: none;
+    gap: 8px;
+}
+
+.upload-progress.is-visible {
+    display: grid;
+}
+
+.upload-progress[hidden] {
+    display: none !important;
+}
+
+.upload-progress-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 0.82rem;
+    color: #334155;
+}
+
+.upload-progress-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.upload-progress-value {
+    font-variant-numeric: tabular-nums;
+    color: #0f172a;
+}
+
+.upload-progress-track {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.28);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.upload-progress-bar {
+    display: block;
+    width: 0%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #0f766e 0%, #14b8a6 100%);
+    transition: width 120ms ease;
 }
 
 .uploads-section {

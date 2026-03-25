@@ -8,6 +8,11 @@ const uploadForm = document.getElementById("upload-form");
 const photoInput = document.getElementById("photo-input");
 const dropZone = document.getElementById("drop-zone");
 const uploadStatus = document.getElementById("upload-status");
+const uploadProgress = document.getElementById("upload-progress");
+const uploadProgressLabel = document.getElementById("upload-progress-label");
+const uploadProgressValue = document.getElementById("upload-progress-value");
+const uploadProgressBar = document.getElementById("upload-progress-bar");
+const cancelUploadButton = document.getElementById("cancel-upload-button");
 const uploadList = document.getElementById("upload-list");
 const uploadCount = document.getElementById("upload-count");
 const clearUploadsButton = document.getElementById("clear-uploads-button");
@@ -37,11 +42,17 @@ const heatMapLayer =
 const maxFilesPerUpload = Number(uploadForm.dataset.maxFiles || 100);
 const maxTotalUploadBytes = Number(uploadForm.dataset.maxTotalBytes || 0);
 let pendingFiles = [];
+let isUploading = false;
+let cancelUploadRequested = false;
+let activeUploadRequest = null;
+let statusResetTimer = null;
+let currentPhotos = [];
 const DEFAULT_HORIZONTAL_FOV_DEGREES = 55;
 const MIN_HORIZONTAL_FOV_DEGREES = 12;
 const TARGET_FRAME_WIDTH_METERS = 90;
 const MIN_VIEWING_DISTANCE_METERS = 30;
 const MAX_VIEWING_DISTANCE_METERS = 250;
+const SUCCESS_STATUS_TIMEOUT_MS = 5000;
 
 const satelliteLayer = L.tileLayer(
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -104,8 +115,61 @@ function getReadyToUploadMessage(count) {
 }
 
 function setStatus(message, tone = "") {
+    if (statusResetTimer !== null) {
+        window.clearTimeout(statusResetTimer);
+        statusResetTimer = null;
+    }
+
     uploadStatus.textContent = message;
     uploadStatus.className = tone ? `status-message is-${tone}` : "status-message";
+}
+
+function setTimedStatus(message, tone, timeoutMs) {
+    setStatus(message, tone);
+    if (!message || timeoutMs <= 0) {
+        return;
+    }
+
+    statusResetTimer = window.setTimeout(() => {
+        uploadStatus.textContent = "";
+        uploadStatus.className = "status-message";
+        statusResetTimer = null;
+    }, timeoutMs);
+}
+
+function setUploadUiState(uploading) {
+    photoInput.disabled = uploading;
+    dropZone.classList.toggle("is-disabled", uploading);
+    cancelUploadButton.hidden = !uploading;
+    cancelUploadButton.disabled = !uploading;
+    clearUploadsButton.disabled = uploading || uploadCount.textContent === "0 files";
+}
+
+function showUploadProgress() {
+    uploadProgress.hidden = false;
+    uploadProgress.classList.add("is-visible");
+}
+
+function hideUploadProgress() {
+    uploadProgress.hidden = true;
+    uploadProgress.classList.remove("is-visible");
+    uploadProgressLabel.textContent = "Uploading files";
+    uploadProgressValue.textContent = "0%";
+    uploadProgressBar.style.width = "0%";
+    uploadProgress
+        .querySelector(".upload-progress-track")
+        .setAttribute("aria-valuenow", "0");
+}
+
+function setUploadProgress(percentComplete, label) {
+    const clampedPercent = clamp(percentComplete, 0, 100);
+    const roundedPercent = Math.round(clampedPercent);
+    uploadProgressLabel.textContent = label;
+    uploadProgressValue.textContent = `${roundedPercent}%`;
+    uploadProgressBar.style.width = `${clampedPercent}%`;
+    uploadProgress
+        .querySelector(".upload-progress-track")
+        .setAttribute("aria-valuenow", String(roundedPercent));
 }
 
 function formatBytes(sizeBytes) {
@@ -170,7 +234,15 @@ async function parseApiResponse(response) {
     }
 
     if (bodyText.startsWith("<!doctype") || bodyText.startsWith("<html")) {
+        if (response.status === 413) {
+            return { error: "Upload is too large. Reduce the number of files or total upload size and try again." };
+        }
+
         return { error: "Server returned an HTML error page instead of JSON." };
+    }
+
+    if (response.status === 413) {
+        return { error: "Upload is too large. Reduce the number of files or total upload size and try again." };
     }
 
     return { error: bodyText };
@@ -206,14 +278,69 @@ function getCapturedLabel(photo) {
     return photo.metadata?.date_time_original || photo.metadata?.create_date || formatDate(photo.uploaded_at);
 }
 
-function updatePendingFiles(files) {
+function updatePendingFiles(files, { clearStatus = true } = {}) {
     pendingFiles = files;
     if (!files.length) {
-        setStatus("");
+        if (clearStatus) {
+            setStatus("");
+        }
         return;
     }
 
     setStatus(getReadyToUploadMessage(files.length));
+}
+
+function getUploadProgressLabel(currentIndex, totalFiles) {
+    return `Uploading ${currentIndex} of ${totalFiles}`;
+}
+
+function isDuplicateUploadError(error) {
+    return typeof error?.error === "string" && error.error.startsWith("Duplicate photo already imported");
+}
+
+function buildUploadSummaryMessage(uploadedCount, errors) {
+    const duplicateCount = errors.filter(isDuplicateUploadError).length;
+    const failureCount = errors.length - duplicateCount;
+    const messageParts = [`Uploaded ${formatCountLabel(uploadedCount, "file")}.`];
+
+    if (duplicateCount > 0) {
+        messageParts.push(`${formatCountLabel(duplicateCount, "duplicate")}.`);
+    }
+
+    if (failureCount > 0) {
+        messageParts.push(`${formatCountLabel(failureCount, "failed upload")}.`);
+    }
+
+    return messageParts.join(" ");
+}
+
+async function startUploadFromFiles(files, { clearInput = false } = {}) {
+    if (isUploading) {
+        setStatus("Upload already in progress.", "error");
+        return;
+    }
+
+    const nextFiles = Array.from(files);
+    if (!validateSelectedFiles(nextFiles)) {
+        updatePendingFiles([]);
+        if (clearInput) {
+            photoInput.value = "";
+        }
+        return;
+    }
+
+    pendingFiles = nextFiles;
+
+    try {
+        await uploadSelectedFiles();
+    } catch (error) {
+        hideUploadProgress();
+        setStatus(getErrorMessage(error, "Upload failed."), "error");
+    }
+
+    if (clearInput) {
+        photoInput.value = "";
+    }
 }
 
 function normalizeBearing(degrees) {
@@ -531,9 +658,26 @@ function buildPhotoPopupMarkup(photo, metadata, directionDegrees, directionRefer
     `;
 }
 
-function renderPhotoMarkers(photos) {
+function resetMapOverlays() {
+    if (typeof map.closePopup === "function") {
+        map.closePopup();
+    }
+
+    photoMarkers.eachLayer((layer) => {
+        if (typeof layer.closePopup === "function") {
+            layer.closePopup();
+        }
+        if (typeof layer.unbindPopup === "function") {
+            layer.unbindPopup();
+        }
+    });
+
     photoMarkers.clearLayers();
     fieldOfViewLayer.clearLayers();
+}
+
+function renderPhotoMarkers(photos) {
+    resetMapOverlays();
 
     const gpsPhotos = photos.filter(
         (photo) => typeof photo.latitude === "number" && typeof photo.longitude === "number"
@@ -586,6 +730,33 @@ function renderPhotoMarkers(photos) {
     });
 }
 
+function sortPhotosNewestFirst(photos) {
+    return [...photos].sort((leftPhoto, rightPhoto) => {
+        const leftUploadedAt = leftPhoto.uploaded_at || "";
+        const rightUploadedAt = rightPhoto.uploaded_at || "";
+
+        if (leftUploadedAt === rightUploadedAt) {
+            return (rightPhoto.id || 0) - (leftPhoto.id || 0);
+        }
+
+        return rightUploadedAt.localeCompare(leftUploadedAt);
+    });
+}
+
+function updateDisplayedPhotos(photos) {
+    currentPhotos = sortPhotosNewestFirst(photos);
+    renderUploads(currentPhotos);
+    renderPhotoMarkers(currentPhotos);
+}
+
+function addUploadedPhotosToDisplay(uploadedPhotos) {
+    if (!uploadedPhotos.length) {
+        return;
+    }
+
+    updateDisplayedPhotos([...uploadedPhotos, ...currentPhotos]);
+}
+
 async function loadPhotos() {
     const response = await fetch("/api/photos");
     const payload = await parseApiResponse(response);
@@ -593,13 +764,76 @@ async function loadPhotos() {
         throw new Error(payload.error || "Failed to load photos");
     }
 
-    const photos = payload.photos || [];
-    renderUploads(photos);
-    renderPhotoMarkers(photos);
+    updateDisplayedPhotos(payload.photos || []);
+}
+
+async function uploadSingleFile(file, onProgress) {
+    const formData = new FormData();
+    formData.append("photos", file);
+
+    return new Promise((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        activeUploadRequest = request;
+        request.open("POST", "/api/uploads");
+        request.responseType = "text";
+
+        request.upload.addEventListener("progress", (event) => {
+            if (!event.lengthComputable) {
+                return;
+            }
+
+            onProgress(event.loaded, event.total);
+        });
+
+        request.addEventListener("load", async () => {
+            activeUploadRequest = null;
+            const response = new Response(request.responseText, {
+                status: request.status,
+                statusText: request.statusText,
+                headers: {
+                    "content-type": request.getResponseHeader("content-type") || "",
+                },
+            });
+
+            const payload = await parseApiResponse(response);
+            if (request.status < 200 || request.status >= 300) {
+                resolve({
+                    uploadedCount: 0,
+                    errors:
+                        payload.errors ||
+                        [{ file: file.name, error: payload.error || "Upload failed." }],
+                });
+                return;
+            }
+
+            resolve({
+                uploadedCount: payload.uploaded?.length || 0,
+                uploadedPhotos: payload.uploaded || [],
+                errors: payload.errors || [],
+            });
+        });
+
+        request.addEventListener("error", () => {
+            activeUploadRequest = null;
+            reject(new Error("Network error while uploading photo."));
+        });
+
+        request.addEventListener("abort", () => {
+            activeUploadRequest = null;
+            reject(new Error("Upload was interrupted."));
+        });
+
+        request.send(formData);
+    });
 }
 
 async function uploadSelectedFiles() {
     const files = pendingFiles.length ? pendingFiles : Array.from(photoInput.files);
+    if (isUploading) {
+        setStatus("Upload already in progress.", "error");
+        return;
+    }
+
     if (!files.length) {
         setStatus("Select one or more photos first.", "error");
         return;
@@ -609,38 +843,84 @@ async function uploadSelectedFiles() {
         return;
     }
 
-    const formData = new FormData();
-    files.forEach((file) => {
-        formData.append("photos", file);
-    });
+    let uploadedCount = 0;
+    const errors = [];
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+    let completedBytes = 0;
 
-    setStatus(`Uploading ${formatCountLabel(files.length, "file")}...`);
+    isUploading = true;
+    cancelUploadRequested = false;
+    setStatus("");
+    setUploadUiState(true);
+    showUploadProgress();
+    setUploadProgress(0, getUploadProgressLabel(0, files.length));
 
-    const response = await fetch("/api/uploads", {
-        method: "POST",
-        body: formData,
-    });
-    const payload = await parseApiResponse(response);
+    try {
+        for (const [index, file] of files.entries()) {
+            if (cancelUploadRequested) {
+                break;
+            }
 
-    if (!response.ok) {
-        const message = payload.error || payload.errors?.[0]?.error || "Upload failed.";
-        throw new Error(message);
+            let result;
+            try {
+                result = await uploadSingleFile(file, (loadedBytes) => {
+                    const percentComplete = totalBytes
+                        ? ((completedBytes + loadedBytes) / totalBytes) * 100
+                        : 100;
+                    setUploadProgress(
+                        percentComplete,
+                        getUploadProgressLabel(index + 1, files.length)
+                    );
+                });
+            } catch (error) {
+                if (
+                    cancelUploadRequested &&
+                    error instanceof Error &&
+                    error.message === "Upload was interrupted."
+                ) {
+                    break;
+                }
+                throw error;
+            }
+
+            completedBytes += file.size;
+            setUploadProgress(
+                totalBytes ? (completedBytes / totalBytes) * 100 : 100,
+                getUploadProgressLabel(Math.min(index + 1, files.length), files.length)
+            );
+            uploadedCount += result.uploadedCount;
+            addUploadedPhotosToDisplay(result.uploadedPhotos || []);
+            errors.push(...result.errors);
+        }
+
+        if (cancelUploadRequested) {
+            setStatus(
+                `Upload cancelled after ${formatCountLabel(uploadedCount, "file")}.`,
+                uploadedCount ? "success" : "error"
+            );
+        } else if (errors.length) {
+            setStatus(
+                buildUploadSummaryMessage(uploadedCount, errors),
+                uploadedCount ? "success" : "error"
+            );
+        } else {
+            setTimedStatus(
+                `Uploaded ${formatCountLabel(uploadedCount, "file")}.`,
+                "success",
+                SUCCESS_STATUS_TIMEOUT_MS
+            );
+        }
+
+        updatePendingFiles([], { clearStatus: false });
+        photoInput.value = "";
+        hideUploadProgress();
+        await loadPhotos();
+    } finally {
+        activeUploadRequest = null;
+        cancelUploadRequested = false;
+        isUploading = false;
+        setUploadUiState(false);
     }
-
-    const uploadedCount = payload.uploaded?.length || 0;
-    const errors = payload.errors || [];
-    if (errors.length) {
-        setStatus(
-            `Uploaded ${formatCountLabel(uploadedCount, "file")}. ${errors.length} failed.`,
-            uploadedCount ? "success" : "error"
-        );
-    } else {
-        setStatus(`Uploaded ${formatCountLabel(uploadedCount, "file")}.`, "success");
-    }
-
-    updatePendingFiles([]);
-    photoInput.value = "";
-    await loadPhotos();
 }
 
 async function clearUploads() {
@@ -662,12 +942,14 @@ async function clearUploads() {
         throw new Error(payload.error || "Unable to clear uploaded photos.");
     }
 
+    hideUploadProgress();
     updatePendingFiles([]);
     photoInput.value = "";
     await loadPhotos();
-    setStatus(
+    setTimedStatus(
         `Cleared ${formatCountLabel(payload.deleted_records || 0, "record")} and ${formatCountLabel(payload.deleted_files || 0, "file")}.`,
-        "success"
+        "success",
+        SUCCESS_STATUS_TIMEOUT_MS
     );
 }
 
@@ -691,15 +973,30 @@ async function deletePhoto(photoId, photoName) {
     }
 
     await loadPhotos();
-    setStatus(`Deleted ${payload.deleted_filename || photoName}.`, "success");
+    setTimedStatus(
+        `Deleted ${payload.deleted_filename || photoName}.`,
+        "success",
+        SUCCESS_STATUS_TIMEOUT_MS
+    );
 }
 
 uploadForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    try {
-        await uploadSelectedFiles();
-    } catch (error) {
-        setStatus(getErrorMessage(error, "Upload failed."), "error");
+    await startUploadFromFiles(pendingFiles.length ? pendingFiles : Array.from(photoInput.files), {
+        clearInput: true,
+    });
+});
+
+cancelUploadButton.addEventListener("click", () => {
+    if (!isUploading) {
+        return;
+    }
+
+    cancelUploadRequested = true;
+    cancelUploadButton.disabled = true;
+    setStatus("Cancelling upload...", "error");
+    if (activeUploadRequest) {
+        activeUploadRequest.abort();
     }
 });
 
@@ -751,13 +1048,7 @@ dropZone.addEventListener("drop", (event) => {
         return;
     }
 
-    const nextFiles = Array.from(files);
-    if (!validateSelectedFiles(nextFiles)) {
-        updatePendingFiles([]);
-        return;
-    }
-
-    updatePendingFiles(nextFiles);
+    startUploadFromFiles(files);
 });
 
 photoInput.addEventListener("change", () => {
@@ -767,16 +1058,12 @@ photoInput.addEventListener("change", () => {
         return;
     }
 
-    const nextFiles = Array.from(files);
-    if (!validateSelectedFiles(nextFiles)) {
-        updatePendingFiles([]);
-        photoInput.value = "";
-        return;
-    }
-
-    updatePendingFiles(nextFiles);
+    startUploadFromFiles(files, { clearInput: true });
 });
 
 loadPhotos().catch(() => {
     setStatus("Unable to load existing uploads.", "error");
 });
+
+hideUploadProgress();
+setUploadUiState(false);

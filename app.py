@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 
@@ -110,6 +110,14 @@ def format_bytes(size_bytes):
     if unit_index == 0:
         return f"{int(size)} {units[unit_index]}"
     return f"{size:.1f} {units[unit_index]}"
+
+
+def calculate_file_checksum(file_path, chunk_size=1024 * 1024):
+    digest = hashlib.md5()
+    with Path(file_path).open("rb") as file_handle:
+        for chunk in iter(lambda: file_handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def convert_ratio(value):
@@ -272,16 +280,18 @@ def gps_to_decimal(values, reference):
     return round(decimal, 8)
 
 
-def extract_exif_metadata_with_pillow(image_path):
+def extract_exif_metadata_with_pillow(image_path=None, image=None):
     Image, _, ExifTags, _ = load_image_dependencies()
     metadata = {}
     latitude = None
     longitude = None
 
-    with Image.open(image_path) as image:
-        exif = image.getexif()
+    def extract_from_image(image_handle):
+        nonlocal latitude, longitude
+
+        exif = image_handle.getexif()
         if not exif:
-            return metadata, latitude, longitude
+            return
 
         for tag_id, raw_value in exif.items():
             tag_name = snake_case(ExifTags.TAGS.get(tag_id, str(tag_id)))
@@ -322,6 +332,14 @@ def extract_exif_metadata_with_pillow(image_path):
             else:
                 metadata[tag_name] = serialize_metadata_value(raw_value)
 
+    if image is not None:
+        extract_from_image(image)
+    elif image_path is not None:
+        with Image.open(image_path) as opened_image:
+            extract_from_image(opened_image)
+    else:
+        return metadata, latitude, longitude
+
     if latitude is not None:
         metadata["gps_latitude_decimal"] = latitude
     if longitude is not None:
@@ -330,7 +348,7 @@ def extract_exif_metadata_with_pillow(image_path):
     return metadata, latitude, longitude
 
 
-def extract_exif_metadata(image_path):
+def extract_exif_metadata(image_path, exif_bytes=None, image=None):
     metadata = {}
     latitude = None
     longitude = None
@@ -338,10 +356,10 @@ def extract_exif_metadata(image_path):
     _, _, _, piexif = load_image_dependencies()
 
     if piexif is None:
-        return extract_exif_metadata_with_pillow(image_path)
+        return extract_exif_metadata_with_pillow(image_path=image_path, image=image)
 
     try:
-        exif_data = piexif.load(str(image_path))
+        exif_data = piexif.load(exif_bytes if exif_bytes else str(image_path))
     except Exception:
         return metadata, latitude, longitude
 
@@ -395,8 +413,7 @@ def extract_exif_metadata(image_path):
 
 def extract_image_metadata(image_path, original_filename):
     Image, UnidentifiedImageError, _, _ = load_image_dependencies()
-    file_bytes = image_path.read_bytes()
-    checksum = hashlib.md5(file_bytes).hexdigest()
+    checksum = calculate_file_checksum(image_path)
     file_size_bytes = image_path.stat().st_size
     file_extension = image_path.suffix.lower().lstrip(".")
     mime_type, _ = mimetypes.guess_type(image_path.name)
@@ -422,16 +439,22 @@ def extract_image_metadata(image_path, original_filename):
             metadata["image_height"] = image.height
             metadata["image_size"] = f"{image.width}x{image.height}"
             metadata["megapixels"] = round((image.width * image.height) / 1_000_000, 1)
+            exif_bytes = image.info.get("exif")
 
             for key, value in image.info.items():
                 normalized_key = snake_case(key)
                 if normalized_key == "exif":
                     continue
                 metadata[normalized_key] = serialize_metadata_value(value)
+
+            exif_metadata, latitude, longitude = extract_exif_metadata(
+                image_path,
+                exif_bytes=exif_bytes,
+                image=image,
+            )
     except UnidentifiedImageError as error:
         raise ValueError("Unsupported or corrupted image file") from error
 
-    exif_metadata, latitude, longitude = extract_exif_metadata(image_path)
     metadata.update(exif_metadata)
     add_derived_camera_metadata(metadata)
 
@@ -461,6 +484,19 @@ def allowed_file(filename):
 
 def api_error_response(message, status_code):
     return jsonify({"error": message}), status_code
+
+
+def is_api_request():
+    return request.path.startswith("/api/")
+
+
+def build_http_error_message(error):
+    if isinstance(error, RequestEntityTooLarge):
+        return (
+            "Upload is too large. Maximum total upload size is "
+            f"{format_bytes(MAX_UPLOAD_TOTAL_BYTES)} per request."
+        )
+    return error.description
 
 
 def clear_uploaded_photos():
@@ -571,24 +607,7 @@ def persist_uploaded_photo(
     uploaded_at = datetime.now(timezone.utc).isoformat()
 
     with get_db_connection() as connection:
-        existing_photo = connection.execute(
-            """
-            SELECT original_filename, uploaded_at
-            FROM photos
-            WHERE checksum = ?
-            LIMIT 1
-            """,
-            (checksum,),
-        ).fetchone()
-
-        if existing_photo is not None:
-            return None, build_upload_error(
-                original_filename,
-                "Duplicate photo already imported "
-                f"as {existing_photo['original_filename']} on {existing_photo['uploaded_at']}.",
-            )
-
-        connection.execute(
+        insert_cursor = connection.execute(
             """
             INSERT INTO photos (
                 original_filename,
@@ -602,7 +621,13 @@ def persist_uploaded_photo(
                 latitude,
                 longitude,
                 uploaded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            )
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM photos
+                WHERE checksum = ?
+            )
             """,
             (
                 original_filename,
@@ -616,8 +641,26 @@ def persist_uploaded_photo(
                 latitude,
                 longitude,
                 uploaded_at,
+                checksum,
             ),
         )
+
+        if insert_cursor.rowcount == 0:
+            existing_photo = connection.execute(
+                """
+                SELECT original_filename, uploaded_at
+                FROM photos
+                WHERE checksum = ?
+                LIMIT 1
+                """,
+                (checksum,),
+            ).fetchone()
+            return None, build_upload_error(
+                original_filename,
+                "Duplicate photo already imported "
+                f"as {existing_photo['original_filename']} on {existing_photo['uploaded_at']}.",
+            )
+
         row = connection.execute(
             """
             SELECT id, original_filename, stored_filename, checksum, file_size_bytes,
@@ -692,21 +735,18 @@ def index():
     )
 
 
-@app.errorhandler(413)
-def payload_too_large(_error):
-    return api_error_response(
-        f"Upload is too large. Maximum total upload size is {format_bytes(MAX_UPLOAD_TOTAL_BYTES)} per request.",
-        413,
-    )
+@app.errorhandler(HTTPException)
+def handle_http_error(error):
+    if not is_api_request():
+        return error
+
+    return api_error_response(build_http_error_message(error), error.code or 500)
 
 
 @app.errorhandler(Exception)
 def handle_application_error(error):
-    if not request.path.startswith("/api/"):
+    if not is_api_request():
         raise error
-
-    if isinstance(error, HTTPException):
-        return api_error_response(error.description, error.code or 500)
 
     app.logger.exception("Unhandled API error", exc_info=error)
     return api_error_response("Unexpected server error while processing the request.", 500)
@@ -725,6 +765,8 @@ def list_photos():
                 """
             ).fetchall()
         return jsonify({"photos": [serialize_photo(row) for row in rows]})
+    except HTTPException:
+        raise
     except Exception as error:
         app.logger.exception("Failed to list photos", exc_info=error)
         return api_error_response("Unable to load uploaded photos.", 500)
@@ -735,6 +777,8 @@ def delete_photos():
     try:
         result = clear_uploaded_photos()
         return jsonify(result)
+    except HTTPException:
+        raise
     except Exception as error:
         app.logger.exception("Failed to clear uploaded photos", exc_info=error)
         return api_error_response("Unable to clear uploaded photos.", 500)
@@ -747,6 +791,8 @@ def delete_photo(photo_id):
         if result is None:
             return api_error_response("Photo not found.", 404)
         return jsonify(result)
+    except HTTPException:
+        raise
     except Exception as error:
         app.logger.exception("Failed to delete uploaded photo", exc_info=error)
         return api_error_response("Unable to delete uploaded photo.", 500)
@@ -773,6 +819,8 @@ def upload_photos():
 
         status_code = 200 if uploaded else 400
         return jsonify({"uploaded": uploaded, "errors": errors}), status_code
+    except HTTPException:
+        raise
     except Exception as error:
         app.logger.exception("Failed to upload photos", exc_info=error)
         return api_error_response("Unexpected server error while uploading photos.", 500)

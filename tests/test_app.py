@@ -1,5 +1,6 @@
 import io
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -65,6 +66,49 @@ class PhotoAppTestCase(unittest.TestCase):
                 ),
             )
 
+    def test_calculate_file_checksum_streams_expected_digest(self):
+        sample_path = self.upload_dir / "checksum.bin"
+        sample_bytes = b"abc123" * 4096
+        sample_path.write_bytes(sample_bytes)
+
+        checksum = photo_app.calculate_file_checksum(sample_path, chunk_size=1024)
+
+        self.assertEqual(checksum, "75e460a1ced0a091a9df273d65c8ada3")
+
+    def test_extract_exif_metadata_prefers_in_memory_exif_bytes(self):
+        mock_piexif = SimpleNamespace(
+            load=lambda value: {
+                "0th": {},
+                "Exif": {},
+                "GPS": {},
+                "Interop": {},
+                "1st": {},
+            },
+            TAGS={"0th": {}, "Exif": {}, "GPS": {}, "Interop": {}, "1st": {}},
+            GPSIFD=SimpleNamespace(
+                GPSLatitude=1,
+                GPSLatitudeRef=2,
+                GPSLongitude=3,
+                GPSLongitudeRef=4,
+                GPSImgDirection=5,
+                GPSImgDirectionRef=6,
+                GPSDestBearing=7,
+                GPSDestBearingRef=8,
+            ),
+        )
+
+        with patch.object(photo_app, "load_image_dependencies", return_value=(None, None, None, mock_piexif)):
+            with patch.object(mock_piexif, "load", wraps=mock_piexif.load) as piexif_load:
+                metadata, latitude, longitude = photo_app.extract_exif_metadata(
+                    self.upload_dir / "sample.jpg",
+                    exif_bytes=b"in-memory-exif",
+                )
+
+        self.assertEqual(metadata, {})
+        self.assertIsNone(latitude)
+        self.assertIsNone(longitude)
+        piexif_load.assert_called_once_with(b"in-memory-exif")
+
     def test_list_photos_returns_empty_collection(self):
         response = self.client.get("/api/photos")
 
@@ -76,6 +120,32 @@ class PhotoAppTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json(), {"error": "No files were uploaded."})
+
+    def test_upload_too_large_returns_json_error(self):
+        original_limit = photo_app.app.config["MAX_CONTENT_LENGTH"]
+        photo_app.app.config["MAX_CONTENT_LENGTH"] = 16
+        self.addCleanup(
+            photo_app.app.config.__setitem__,
+            "MAX_CONTENT_LENGTH",
+            original_limit,
+        )
+
+        response = self.client.post(
+            "/api/uploads",
+            data={"photos": (io.BytesIO(b"this payload is definitely larger than sixteen bytes"), "large.jpg")},
+            content_type="multipart/form-data",
+        )
+
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "error": (
+                    "Upload is too large. Maximum total upload size is "
+                    f"{photo_app.format_bytes(photo_app.MAX_UPLOAD_TOTAL_BYTES)} per request."
+                )
+            },
+        )
 
     def test_upload_rejects_unsupported_file_type(self):
         response = self.client.post(

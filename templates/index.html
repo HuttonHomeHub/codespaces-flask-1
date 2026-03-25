@@ -39,9 +39,20 @@
                     <p class="upload-limits">
                         Limit: up to {{ max_files_per_upload }} photos, {{ max_upload_total_label }} total per upload.
                     </p>
-                    <button class="upload-button" type="submit">Upload Photos</button>
                 </form>
+                <div class="upload-actions">
+                    <button id="cancel-upload-button" class="cancel-upload-button" type="button" hidden>Cancel Upload</button>
+                </div>
                 <p id="upload-status" class="status-message" aria-live="polite"></p>
+                <div id="upload-progress" class="upload-progress" aria-live="polite" hidden>
+                    <div class="upload-progress-header">
+                        <span id="upload-progress-label" class="upload-progress-label">Uploading files</span>
+                        <span id="upload-progress-value" class="upload-progress-value">0%</span>
+                    </div>
+                    <div class="upload-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="upload-progress-label">
+                        <span id="upload-progress-bar" class="upload-progress-bar"></span>
+                    </div>
+                </div>
             </section>
 
             <section class="panel-section uploads-section">
